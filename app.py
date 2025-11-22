@@ -226,7 +226,7 @@ with c1:
         <div class="metric-sub" style="color:{color}">{change:+.2f} ({pct:+.2f}%)</div>
         <div class="metric-label" style="margin-top:15px;">HV (歷史波幅)</div>
         <div style="color:#ccc; font-size:16px;">{hv*100:.1f}%</div>
-    </div>
+
     """, unsafe_allow_html=True)
 
 # B. AI 評分卡片 (略)
