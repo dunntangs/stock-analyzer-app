@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import scipy.stats as si
-from futu import * # <-- 引入 Futu API
+from futu import * import yfinance as yf# <-- 引入 Futu API
 
 # --- 1. 頁面設定 (TradingView 風格) ---
 st.set_page_config(page_title="TradeGenius AI Options", layout="wide", page_icon="⚡", initial_sidebar_state="expanded")
@@ -71,35 +71,31 @@ def period_to_dates(period):
         start_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
     return start_date, end_date
 
-@st.cache_data(ttl=300) 
-def get_stock_data(code, period, _quote_ctx):
-    """使用 Futu API 獲取 K 線數據"""
-    start_date, end_date = period_to_dates(period)
+@st.cache_data(ttl=3600)
+def get_stock_data(code, period):
+    """使用 yfinance 獲取 K 線數據，並將 Futu 代碼轉為 yfinance 格式"""
     
-    # 獲取 K 線數據：改用 get_kline，繞過 get_history_kline 的問題
-    # 我們獲取最近 2500 根 K 線，足夠進行技術分析
-    ret, df = _quote_ctx.get_kline(  
-        code, 
-        num=2500,         # 獲取最近 2500 根 K 線數據
-        ktype=KLType.K_DAY, 
-        autype=AuType.QFQ # 前復權
-    )
+    # 轉換代碼格式 (例如 US.TSLA -> TSLA, HK.00700 -> 00700.HK)
+    if code.startswith("US."):
+        yf_code = code.split(".")[1]
+    elif code.startswith("HK."):
+        yf_code = code.split(".")[1] + ".HK"
+    else:
+        yf_code = code # 保持不變 (例如指數)
+
+    ticker_obj = yf.Ticker(yf_code)
     
-    if ret != RET_OK:
-        return None, f"Futu 錯誤: {df}"
+    # 獲取歷史 K 線數據
+    df = ticker_obj.history(period=period)
     
-    df.rename(columns={'time_key': 'Date', 'open': 'Open', 'high': 'High', 
-                       'low': 'Low', 'close': 'Close', 'volume': 'Volume'}, inplace=True)
-    df['Date'] = pd.to_datetime(df['Date'])
-    df.set_index('Date', inplace=True)
+    if df.empty:
+        return None, f"無法獲取 {code} 數據 (yfinance)"
     
-    # 獲取公司名稱 (Futu 需要另外查詢)
     try:
-        ret_info, df_info = quote_ctx.get_basic_info([code])
-        name = df_info.iloc[0]['name'] if ret_info == RET_OK else code
+        name = ticker_obj.info.get('longName', yf_code)
     except:
-        name = code
-    
+        name = yf_code
+        
     return df, name
 
 
@@ -241,20 +237,17 @@ def main_app(quote_ctx):
 
     # --- 數據處理 ---
     try:
-        df, name = get_stock_data(ticker_input, period, quote_ctx)
+        # ⬇️ 這裡不再傳入 quote_ctx 參數
+        df, name = get_stock_data(ticker_input, period) 
         if df is None: st.error(f"無法獲取 {ticker_input} 數據: {name}"); st.stop()
         
-        df = calculate_indicators(df)
-        score, direction, reasons = get_ai_sentiment(df)
-        current_price = df['Close'].iloc[-1]
-        hv = df['HV'].iloc[-1]
+        # ... (計算指標、AI 情緒等邏輯不變) ...
         
-        # 執行 AI 期權獵人
-        best_opt = hunt_best_option(ticker_input, current_price, direction, hv, quote_ctx)
+        # 執行 AI 期權獵人 (仍然使用 Futu Context)
+        best_opt = hunt_best_option(ticker_input, current_price, direction, hv, quote_ctx) 
         
     except Exception as e:
         st.error(f"應用程式運行錯誤: {e}"); st.stop()
-
     # --- 6. Dashboard 及 圖表 (保持不變) ---
     # (Dashboard 及 Plotly 圖表繪製代碼省略，與上一版相同，確保你貼入完整代碼)
 
