@@ -245,30 +245,25 @@ with c2:
     </div>
     """, unsafe_allow_html=True)
 
-# C. AI 期權推介卡片 (重點 - 已修正符號顯示)
+# C. AI 期權推介卡片 (已移除 Greeks 和推薦理由)
 with c3:
     if best_opt:
         opt_type_text = "看漲 (CALL)" if best_opt['type'] == 'call' else "看跌 (PUT)"
         opt_type_abbr = "C" if best_opt['type'] == 'call' else "P"
         opt_color = TV_UP_COLOR if best_opt['type'] == "call" else TV_DOWN_COLOR
-        leverage = (abs(best_opt['delta']) * current_price) / best_opt['price'] if best_opt['price'] > 0 else 0
         
-        # --- 核心修正邏輯：清理符號 ---
+        # --- 符號清理邏輯 ---
         raw_symbol = best_opt['contractSymbol'] 
         strike_clean = best_opt['strike']       
         
-        # 尋找期權類型符號 (C/P) 的位置
         type_index = raw_symbol.find('C') if 'C' in raw_symbol else raw_symbol.find('P')
         
         if type_index != -1:
-            # 提取 Ticker 和 到期日 (例如 TSLA251219)
             date_part = raw_symbol[:type_index]
-            # 重新構建易讀符號：Ticker+日期 + C/P + Clean Strike
             cleaned_symbol = f"{date_part} {opt_type_abbr}{strike_clean:.2f}"
         else:
-            # 如果解析失敗，則使用原始符號
             cleaned_symbol = raw_symbol
-        # -----------------------------------
+        # -------------------
         
         st.markdown(f"""
         <div class="metric-box" style="border-color: {opt_color};">
@@ -280,17 +275,7 @@ with c3:
                 <div>引伸波幅 (IV): <span style="color:#ffd700">{best_opt['iv']*100:.1f}%</span></div>
             </div>
             
-            <div style="margin-top:10px; padding-top:8px; border-top:1px dashed #444;">
-                <span class="metric-label">GREEKS 分析</span><br>
-                <span class="greek-tag">Delta {best_opt['delta']:.2f}</span>
-                <span class="greek-tag">Gamma {best_opt['gamma']:.3f}</span>
-                <span class="greek-tag">成交量 {best_opt['volume']}</span>
             </div>
-            
-            <div style="margin-top:8px; font-size:12px; color:#aaa;">
-                <i>💡 推薦理由：Delta 位於攻擊區間，Gamma 爆發力高，且 IV 相對合理，槓桿約 {leverage:.1f}x。</i>
-            </div>
-        </div>
         """, unsafe_allow_html=True)
     else:
         st.markdown(f"""
