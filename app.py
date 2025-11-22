@@ -7,7 +7,7 @@ from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import scipy.stats as si 
 
-# --- 1. 頁面設定 ---
+# --- 1. 頁面設定與樣式 ---
 st.set_page_config(page_title="TradeGenius AI Options", layout="wide", page_icon="⚡", initial_sidebar_state="expanded")
 
 TV_BG_COLOR = "#131722"
@@ -62,7 +62,7 @@ def black_scholes(S, K, T, r, sigma, option_type="call"):
 # --- 3. 核心運算: AI 選股與期權獵人 ---
 
 def calculate_indicators(df):
-    # MA, RSI, MACD, KDJ, Volatility
+    # MA, RSI, MACD
     for ma in [10, 20, 50, 200]: df[f'SMA{ma}'] = df['Close'].rolling(window=ma).mean()
     
     delta = df['Close'].diff()
@@ -75,8 +75,7 @@ def calculate_indicators(df):
     df['MACD'] = exp12 - exp26
     df['Signal'] = df['MACD'].ewm(span=9).mean()
     
-    # KDJ (Stochastics) 計算 (參數 9, 3, 3)
-    # 計算 9 期內的最低價 (Low) 和最高價 (High)
+    # KDJ (Stochastics) 計算
     low_min = df['Low'].rolling(window=9).min()
     high_max = df['High'].rolling(window=9).max()
     df['RSV'] = (df['Close'] - low_min) / (high_max - low_min) * 100
@@ -84,7 +83,7 @@ def calculate_indicators(df):
     df['D'] = df['K'].ewm(span=3).mean()
     df['J'] = 3 * df['K'] - 2 * df['D']
 
-    # 歷史波動率 (HV) - 用於比較 IV
+    # 歷史波動率 (HV)
     df['Log_Ret'] = np.log(df['Close'] / df['Close'].shift(1))
     df['HV'] = df['Log_Ret'].rolling(20).std() * np.sqrt(252)
     
@@ -99,7 +98,6 @@ def get_ai_sentiment(df):
     else: score -= 15; reasons.append("股價跌破 MA20")
     
     if row['MACD'] > row['Signal']: score += 15; reasons.append("MACD 金叉")
-    # KDJ 判斷（K線向上穿過D線視為金叉）
     if row['K'] > row['D'] and df['K'].iloc[-2] <= df['D'].iloc[-2]: 
         score += 10; reasons.append("KDJ 金叉")
 
@@ -154,7 +152,6 @@ def hunt_best_option(ticker_obj, current_price, direction, hv):
             delta, gamma = black_scholes(current_price, strike, T, r, iv, direction)
             
             if 0.3 <= abs(delta) <= 0.7:
-                # 使用 log(volume + 1) 容錯
                 score = (gamma * 100) * (np.log(volume + 1)) / (iv * 10)
                 
                 candidates.append({
@@ -167,7 +164,7 @@ def hunt_best_option(ticker_obj, current_price, direction, hv):
                     "iv": iv,
                     "volume": volume,
                     "score": score,
-                    "type": direction # 紀錄期權類型
+                    "type": direction 
                 })
         
         if candidates:
@@ -215,7 +212,7 @@ except Exception as e:
 
 c1, c2, c3 = st.columns([1, 1, 1.5])
 
-# A. 股價卡片
+# A. 股價卡片 (略)
 with c1:
     last_close = df['Close'].iloc[-1]
     change = last_close - df['Close'].iloc[-2]
@@ -232,7 +229,7 @@ with c1:
     </div>
     """, unsafe_allow_html=True)
 
-# B. AI 評分卡片
+# B. AI 評分卡片 (略)
 with c2:
     score_color = TV_UP_COLOR if score >= 55 else TV_DOWN_COLOR if score <= 45 else "#FF9800"
     sentiment_text = "看漲 (Bullish)" if direction == "call" else "看跌 (Bearish)" if direction == "put" else "中性 (Neutral)"
@@ -248,19 +245,35 @@ with c2:
     </div>
     """, unsafe_allow_html=True)
 
-# C. AI 期權推介卡片 (重點 - 改善顯示)
+# C. AI 期權推介卡片 (重點 - 已修正符號顯示)
 with c3:
     if best_opt:
-        opt_type = "看漲 (CALL)" if best_opt['type'] == 'call' else "看跌 (PUT)"
+        opt_type_text = "看漲 (CALL)" if best_opt['type'] == 'call' else "看跌 (PUT)"
+        opt_type_abbr = "C" if best_opt['type'] == 'call' else "P"
         opt_color = TV_UP_COLOR if best_opt['type'] == "call" else TV_DOWN_COLOR
         leverage = (abs(best_opt['delta']) * current_price) / best_opt['price'] if best_opt['price'] > 0 else 0
         
+        # --- 核心修正邏輯：清理符號 ---
+        raw_symbol = best_opt['contractSymbol'] 
+        strike_clean = best_opt['strike']       
+        
+        # 尋找期權類型符號 (C/P) 的位置
+        type_index = raw_symbol.find('C') if 'C' in raw_symbol else raw_symbol.find('P')
+        
+        if type_index != -1:
+            # 提取 Ticker 和 到期日 (例如 TSLA251219)
+            date_part = raw_symbol[:type_index]
+            # 重新構建易讀符號：Ticker+日期 + C/P + Clean Strike
+            cleaned_symbol = f"{date_part} {opt_type_abbr}{strike_clean:.2f}"
+        else:
+            # 如果解析失敗，則使用原始符號
+            cleaned_symbol = raw_symbol
+        # -----------------------------------
+        
         st.markdown(f"""
         <div class="metric-box" style="border-color: {opt_color};">
-            <div class="recomm-badge">{opt_type} - AI 嚴選</div>
-            <div class="opt-title">{best_opt['contractSymbol']}</div>
-            
-            <div class="opt-detail-grid">
+            <div class="recomm-badge">{opt_type_text} - AI 嚴選</div>
+            <div class="opt-title">{cleaned_symbol}</div>  <div class="opt-detail-grid">
                 <div>到期日: <span style="color:#fff">{best_opt['expiry']}</span></div>
                 <div>行使價: <span style="color:#fff">${best_opt['strike']:.2f}</span></div>
                 <div>最新價: <span style="color:#fff; font-size:16px;">${best_opt['price']:.2f}</span></div>
@@ -290,10 +303,9 @@ with c3:
         </div>
         """, unsafe_allow_html=True)
 
-# --- 7. 圖表 (新增 RSI, MACD, KDJ) ---
+# --- 7. 圖表 (已包含 RSI, MACD, KDJ) ---
 st.markdown("<br>", unsafe_allow_html=True)
 
-# 創建 4 行子圖: K線/MA, Volume, RSI, MACD
 fig = make_subplots(rows=4, cols=1, 
                     shared_xaxes=True, 
                     vertical_spacing=0.03, 
