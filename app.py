@@ -258,7 +258,7 @@ try:
 except Exception as e:
     st.error(f"數據處理錯誤: {type(e).__name__}: {e}"); st.stop()
 
-# --- 6. Dashboard (恢復卡片顯示) ---
+# --- 6. Dashboard (移除 C3 卡片內容) ---
 
 c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
 
@@ -295,47 +295,21 @@ with c2:
     </div>
     """, unsafe_allow_html=True)
 
-# C. AI 期權推介卡片 (恢復顯示)
+# C. AI 期權推介卡片 (移除顯示，保留空位)
 with c3:
-    if best_opt:
-        opt_type_text = "看漲 (CALL)" if best_opt['type'] == 'call' else "看跌 (PUT)"
-        opt_type_abbr = "C" if best_opt['type'] == 'call' else "P"
-        opt_color = TV_UP_COLOR if best_opt['type'] == "call" else TV_DOWN_COLOR
-        
-        raw_symbol = best_opt['contractSymbol'] 
-        strike_clean = best_opt['strike']       
-        type_index = raw_symbol.find('C') if 'C' in raw_symbol else raw_symbol.find('P')
-        
-        if type_index != -1:
-            date_part = raw_symbol[:type_index]
-            cleaned_symbol = f"{date_part} {opt_type_abbr}{strike_clean:.2f}"
-        else:
-            cleaned_symbol = raw_symbol
-        
-        st.markdown(f"""
-        <div class="metric-box" style="border-color: {opt_color};">
-            <div class="recomm-badge">{opt_type_text} - AI 嚴選</div>
-            <div class="opt-title">{cleaned_symbol}</div>
-            
-            <div class="opt-detail-grid">
-                <div>到期日: <span style="color:#fff">{best_opt['expiry']}</span></div>
-                <div>行使價: <span style="color:#fff">${best_opt['strike']:.2f}</span></div>
-                <div>最新價: <span style="color:#fff; font-size:16px;">${best_opt['price']:.2f}</span></div>
-                <div>引伸波幅 (IV): <span style="color:#ffd700">{best_opt['iv']*100:.1f}%</span></div>
-            </div>
-        </div>""", unsafe_allow_html=True)
-    else:
-        st.markdown(f"""
-        <div class="metric-box">
-            <div class="metric-label">AI 期權獵人</div>
-            <div style="margin-top:20px; color:#999;">
-                ⚠️ 暫無合適期權推介。<br>
-                <small>可能原因：數據源無即時期權鏈、流動性不足或市場處於休市。</small>
-            </div>
+    # 這裡可以留空，或者放一個通用的佔位卡片
+    st.markdown(f"""
+    <div class="metric-box">
+        <div class="metric-label">期權推介</div>
+        <div style="margin-top:20px; color:#999;">
+            <p>ℹ️ 此功能已關閉。</p>
+            <p><small>如需重新開啟，請告知。</small></p>
         </div>
-        """, unsafe_allow_html=True)
+    </div>
+    """, unsafe_allow_html=True)
 
-# D. AI 推估卡片 (恢復顯示)
+
+# D. AI 推估卡片 (保留顯示)
 with c4:
     st.markdown(f"""
     <div class="metric-box">
@@ -360,7 +334,7 @@ with c4:
     """, unsafe_allow_html=True)
 
 
-# --- 7. 圖表 ---
+# --- 7. 圖表 (保留 AI 預測線) ---
 st.markdown("<br>", unsafe_allow_html=True)
 
 fig = make_subplots(rows=4, cols=1, 
