@@ -6,7 +6,7 @@ from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import scipy.stats as si
 from futu import *
-import yfinance as yf 
+# 已移除 import yfinance as yf
 
 
 # --- 1. 頁面設定與樣式 ---
@@ -60,37 +60,49 @@ def black_scholes(S, K, T, r, sigma, option_type="call"):
         return 0, 0
 
 
-# --- 3. 數據獲取 (使用 yfinance 獲取歷史數據) ---
+# --- 3. 數據獲取 (使用 Futu API 獲取歷史數據) ---
 
-@st.cache_data(ttl=3600)
-def get_stock_data(code, period):
-    """使用 yfinance 獲取 K 線數據，並將 Futu 代碼轉為 yfinance 格式"""
+# 輔助函數：將周期轉換為天數，以便 get_kline 獲取足夠數據
+def period_to_num(period):
+    if period == "3mo": return 60
+    elif period == "6mo": return 120
+    elif period == "1y": return 250
+    elif period == "2y": return 500
+    return 250
+
+@st.cache_data(ttl=300) 
+def get_stock_data(code, period, _quote_ctx): # <--- 恢復 Futu API 參數
+    """使用 Futu API 獲取 K 線數據"""
     
-    # 轉換代碼格式 (例如 US.TSLA -> TSLA, HK.00700 -> 00700.HK)
-    if code.startswith("US."):
-        yf_code = code.split(".")[1]
-    elif code.startswith("HK."):
-        yf_code = code.split(".")[1] + ".HK"
-    else:
-        yf_code = code
-
-    try:
-        ticker_obj = yf.Ticker(yf_code)
-        
-        # 獲取歷史 K 線數據
-        df = ticker_obj.history(period=period)
-        
-        if df.empty:
-            return None, f"無法獲取 {code} 數據 (yfinance)"
-        
-        name = ticker_obj.info.get('longName', yf_code)
-    except Exception as e:
-         return None, f"yfinance 錯誤: {e}"
+    num_points = period_to_num(period) # 根據選定周期確定獲取點數
+    
+    # 🚨 注意：這裡使用了我們之前失敗的 get_kline 方法 🚨
+    ret, df = _quote_ctx.get_kline(  
+        code, 
+        num=2500,         # 為了安全，獲取足夠的點數
+        ktype=KLType.K_DAY, 
+        autype=AuType.QFQ # 前復權
+    )
+    
+    if ret != RET_OK:
+        return None, f"Futu 錯誤: {df}"
+    
+    # Futu API 返回的 DataFrame 需要清理和格式化，並取最後幾筆
+    df = df.rename(columns={'close': 'Close', 'open': 'Open', 'high': 'High', 'low': 'Low', 'time_key': 'Date'})
+    df['Date'] = pd.to_datetime(df['Date'])
+    df = df.set_index('Date').sort_index()
+    
+    # 只保留需要的數據點 (確保數據點數匹配 period_to_num)
+    df = df.iloc[-num_points:]
+    
+    # 獲取股票名稱 (使用 Futu API)
+    ret_info, df_info = _quote_ctx.get_market_snapshot([code])
+    name = df_info.iloc[0]['name'] if ret_info == RET_OK and not df_info.empty else code
         
     return df, name
 
 
-# --- 4. 技術指標與 AI 邏輯 ---
+# --- 4. 技術指標與 AI 邏輯 (保持不變) ---
 
 def calculate_indicators(df):
     for ma in [10, 20, 50, 200]: df[f'SMA{ma}'] = df['Close'].rolling(window=ma).mean()
@@ -108,9 +120,8 @@ def calculate_indicators(df):
 
 
 def create_candlestick_chart(df, ticker_name):
-    """創建帶有 MA 和 MACD/RSI 的 K 線圖"""
-    
-    # 創建主 K 線圖
+    # 繪圖函數與之前版本一致 (已包含在最終版本)
+    # ... (省略圖表細節代碼) ...
     fig = make_subplots(rows=3, cols=1, shared_xaxes=True, 
                         vertical_spacing=0.05, row_heights=[0.6, 0.2, 0.2])
 
@@ -123,23 +134,19 @@ def create_candlestick_chart(df, ticker_name):
                                  increasing_line_color=TV_UP_COLOR,
                                  decreasing_line_color=TV_DOWN_COLOR), row=1, col=1)
 
-    # 加入移動平均線
     for ma in [20, 50]:
         fig.add_trace(go.Scatter(x=df.index, y=df[f'SMA{ma}'], name=f'MA{ma}', 
                                  line=dict(width=1)), row=1, col=1)
 
-    # MACD 子圖
     fig.add_trace(go.Bar(x=df.index, y=df['MACD'] - df['Signal'], name='MACD 柱',
                          marker_color='#2962ff'), row=2, col=1)
     fig.add_trace(go.Scatter(x=df.index, y=df['MACD'], name='MACD', line=dict(color='#ff9900')), row=2, col=1)
     fig.add_trace(go.Scatter(x=df.index, y=df['Signal'], name='Signal', line=dict(color='#f6006e')), row=2, col=1)
 
-    # RSI 子圖
     fig.add_trace(go.Scatter(x=df.index, y=df['RSI'], name='RSI', line=dict(color='#008080')), row=3, col=1)
     fig.add_hline(y=70, line_dash="dash", line_color="#f23645", row=3, col=1)
     fig.add_hline(y=30, line_dash="dash", line_color=TV_UP_COLOR, row=3, col=1)
 
-    # 佈局美化
     fig.update_layout(
         title=f'<span style="color:{TEXT_COLOR}; font-size:24px;">{ticker_name} K線分析 ({df.index[-1].strftime("%Y-%m-%d")})</span>',
         height=900,
@@ -156,7 +163,6 @@ def create_candlestick_chart(df, ticker_name):
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
     )
 
-    # 設置每個子圖的背景
     fig.update_xaxes(rangeselector_visible=False, 
                      rangeslider_visible=False, 
                      showgrid=False, 
@@ -182,14 +188,11 @@ def get_ai_sentiment(df):
     direction = "call" if score >= 55 else "put" if score <= 45 else "neutral"
     return score, direction, reasons
 
-# 這是 Futu API 獲取期權鏈的核心函數
+
 def hunt_best_option(code, current_price, direction, hv, _quote_ctx):
-    """
-    AI 期權獵人：使用 Futu API 獲取真實期權鏈
-    _quote_ctx 前面加底線，告訴 Streamlit 不要哈希它
-    """
+    # Futu 期權獵人邏輯 (保持不變)
+    # ... (代碼與之前版本一致) ...
     try:
-        # 1. 獲取到期日 (尋找 25-60 天內)
         ret, exps_df = _quote_ctx.get_option_expiry_date(code, OptionMarket.ALL)
         if ret != RET_OK or exps_df.empty: raise ValueError("無期權鏈數據")
 
@@ -205,7 +208,6 @@ def hunt_best_option(code, current_price, direction, hv, _quote_ctx):
         
         if not target_date_str: target_date_str = exps_df.iloc[0]['strike_time']
         
-        # 2. 獲取期權鏈
         option_type = OptionCondType.CALL if direction == "call" else OptionCondType.PUT
         ret, df_chain = _quote_ctx.get_option_chain(
             code=code, 
@@ -253,7 +255,6 @@ def hunt_best_option(code, current_price, direction, hv, _quote_ctx):
             return None
 
     except Exception as e:
-        # Fallback 模式：如果 Futu 找不到數據，就顯示模擬建議
         strike_theory = round(current_price * (1.02 if direction == "call" else 0.98), 1)
         days_theory = 30
         
@@ -269,6 +270,7 @@ def hunt_best_option(code, current_price, direction, hv, _quote_ctx):
             "score": 0,
             "is_simulation": True 
         }
+
 
 # --- 5. 應用程式主邏輯 ---
 
@@ -286,27 +288,26 @@ def main_app(quote_ctx):
     ticker_input = st.sidebar.text_input("代碼 (US.TSLA, HK.00700)", value="US.TSLA").upper()
     period = st.sidebar.select_slider("範圍", ["3mo", "6mo", "1y", "2y"], value="6mo")
     st.sidebar.markdown("---")
-    st.sidebar.info("K線數據源: yfinance\n期權數據源: Futu OpenD (需本地運行)")
+    st.sidebar.info("K線數據源: Futu OpenD (需本地運行)\n期權數據源: Futu OpenD (需本地運行)")
 
     if not ticker_input: st.stop()
 
     # --- 數據處理 ---
     try:
-        # 呼叫 yfinance 獲取歷史數據
-        df, name = get_stock_data(ticker_input, period) 
+        # 呼叫 Futu API 獲取歷史數據 (恢復 Futu Context 傳入)
+        df, name = get_stock_data(ticker_input, period, quote_ctx) 
         if df is None: st.error(f"無法獲取 {ticker_input} 數據: {name}"); st.stop()
         
         df = calculate_indicators(df)
         score, direction, reasons = get_ai_sentiment(df)
         
-        # 定義關鍵變數
         current_price = df['Close'].iloc[-1]
         hv = df['HV'].iloc[-1]
         
-        # 執行 AI 期權獵人 (使用 Futu Context)
         best_opt = hunt_best_option(ticker_input, current_price, direction, hv, quote_ctx)
         
     except Exception as e:
+        # 如果發生錯誤，在這裡顯示
         st.error(f"應用程式運行錯誤: {e}"); st.stop()
 
     # --- 6. Dashboard 及 圖表渲染 ---
@@ -334,7 +335,6 @@ def main_app(quote_ctx):
 
 # --- 8. 程式進入點 (連線 OpenD) ---
 if __name__ == '__main__':
-    # 確保 OpenD 已經在你的電腦上運行，並且端口是 11111
     try:
         # 連線 Futu OpenD
         quote_ctx = OpenQuoteContext(host='127.0.0.1', port=11111)
@@ -343,11 +343,9 @@ if __name__ == '__main__':
         main_app(quote_ctx)
         
     except Exception as e:
-        # 當連線失敗時，顯示具體錯誤
         st.error(f"🚨 Futu OpenD 連接失敗！請檢查:\n1. 確保 OpenD 軟件已啟動且已解鎖。\n2. 確保端口設置為 11111。\n\n錯誤信息: {e}")
         
     finally:
-        # 結束連線
         try:
             quote_ctx.close()
         except:
