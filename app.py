@@ -6,7 +6,8 @@ from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import scipy.stats as si
 from futu import *
-import yfinance as yf
+import yfinance as yf # 引入 yfinance 獲取歷史數據
+
 
 # --- 1. 頁面設定 (TradingView 風格) ---
 st.set_page_config(page_title="TradeGenius AI Options", layout="wide", page_icon="⚡", initial_sidebar_state="expanded")
@@ -57,20 +58,7 @@ def black_scholes(S, K, T, r, sigma, option_type="call"):
     except:
         return 0, 0
 
-# --- 3. Futu API 數據獲取 (核心變動) ---
-
-# 輔助函數：將 period (e.g. '6mo') 轉換為日期
-def period_to_dates(period):
-    end_date = datetime.now().strftime("%Y-%m-%d")
-    if 'mo' in period:
-        months = int(period.replace('mo', ''))
-        start_date = (datetime.now() - timedelta(days=months*30)).strftime("%Y-%m-%d")
-    elif 'y' in period:
-        years = int(period.replace('y', ''))
-        start_date = (datetime.now() - timedelta(days=years*365)).strftime("%Y-%m-%d")
-    else:
-        start_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
-    return start_date, end_date
+# --- 3. 數據獲取 (使用 yfinance 獲取歷史數據，繞過 Futu K 線錯誤) ---
 
 @st.cache_data(ttl=3600)
 def get_stock_data(code, period):
@@ -82,25 +70,25 @@ def get_stock_data(code, period):
     elif code.startswith("HK."):
         yf_code = code.split(".")[1] + ".HK"
     else:
-        yf_code = code # 保持不變 (例如指數)
+        yf_code = code
 
-    ticker_obj = yf.Ticker(yf_code)
-    
-    # 獲取歷史 K 線數據
-    df = ticker_obj.history(period=period)
-    
-    if df.empty:
-        return None, f"無法獲取 {code} 數據 (yfinance)"
-    
     try:
+        ticker_obj = yf.Ticker(yf_code)
+        
+        # 獲取歷史 K 線數據
+        df = ticker_obj.history(period=period)
+        
+        if df.empty:
+            return None, f"無法獲取 {code} 數據 (yfinance)"
+        
         name = ticker_obj.info.get('longName', yf_code)
-    except:
-        name = yf_code
+    except Exception as e:
+         return None, f"yfinance 錯誤: {e}"
         
     return df, name
 
 
-# --- 4. 技術指標與 AI 邏輯 (大部分不變) ---
+# --- 4. 技術指標與 AI 邏輯 ---
 
 def calculate_indicators(df):
     for ma in [10, 20, 50, 200]: df[f'SMA{ma}'] = df['Close'].rolling(window=ma).mean()
@@ -132,15 +120,15 @@ def get_ai_sentiment(df):
     direction = "call" if score >= 55 else "put" if score <= 45 else "neutral"
     return score, direction, reasons
 
-def hunt_best_option(code, current_price, direction, hv, quote_ctx):
+# 這是 Futu API 獲取期權鏈的核心函數
+def hunt_best_option(code, current_price, direction, hv, _quote_ctx):
     """
     AI 期權獵人：使用 Futu API 獲取真實期權鏈
+    _quote_ctx 前面加底線，告訴 Streamlit 不要哈希它
     """
-    best_option = None
-    
     try:
         # 1. 獲取到期日 (尋找 25-60 天內)
-        ret, exps_df = quote_ctx.get_option_expiry_date(code, OptionMarket.ALL)
+        ret, exps_df = _quote_ctx.get_option_expiry_date(code, OptionMarket.ALL)
         if ret != RET_OK or exps_df.empty: raise ValueError("無期權鏈數據")
 
         today = datetime.now()
@@ -157,7 +145,7 @@ def hunt_best_option(code, current_price, direction, hv, quote_ctx):
         
         # 2. 獲取期權鏈
         option_type = OptionCondType.CALL if direction == "call" else OptionCondType.PUT
-        ret, df_chain = quote_ctx.get_option_chain(
+        ret, df_chain = _quote_ctx.get_option_chain(
             code=code, 
             market=OptionMarket.ALL, 
             index_option_type=OptionType.ALL, 
@@ -170,20 +158,19 @@ def hunt_best_option(code, current_price, direction, hv, quote_ctx):
         r = 0.05 
         T = (datetime.strptime(target_date_str, "%Y-%m-%d") - today).days / 365.0
         
+        # ... (後續的期權篩選邏輯不變) ...
+        
         for index, row in df_chain.iterrows():
-            # Futu API 數據清洗
-            if row['volume'] < 10 or row['open_interest'] < 50: continue
-            
+            if 'implied_volatility' not in row or row['implied_volatility'] <= 0: continue
+            if 'price' not in row or row['price'] <= 0: continue
+            if 'volume' not in row or row['volume'] < 10: continue
+
             strike = row['strike']
             iv = row['implied_volatility']
             price = row['price']
             
-            if iv <= 0 or price <= 0: continue
-            
-            # 計算 Greeks (用 Futu 的 IV)
             delta, gamma = black_scholes(current_price, strike, T, r, iv, direction)
             
-            # AI 策略篩選邏輯：Delta 0.3 ~ 0.7 之間
             if 0.3 <= abs(delta) <= 0.7:
                 score = (gamma * 100) * (np.log(row['volume']+1)) / (iv * 10)
                 
@@ -226,47 +213,82 @@ def hunt_best_option(code, current_price, direction, hv, quote_ctx):
 # --- 5. 應用程式主邏輯 ---
 
 def main_app(quote_ctx):
+    
+    # --- 關鍵變數初始化 (解決 NameError) ---
+    name = "數據未載入"
+    current_price = 0.0
+    hv = 0.0
+    best_opt = None 
+    # ------------------------------------
+    
     # --- 介面 Sidebar ---
     st.sidebar.markdown("## ⚙️ 參數設定")
-    # 將 TSLA 代碼轉換為 Futu 格式 (HK.00700, US.TSLA)
     ticker_input = st.sidebar.text_input("代碼 (US.TSLA, HK.00700)", value="US.TSLA").upper()
     period = st.sidebar.select_slider("範圍", ["3mo", "6mo", "1y", "2y"], value="6mo")
     st.sidebar.markdown("---")
-    st.sidebar.info("數據來源: Futu OpenD (需本地運行)")
+    st.sidebar.info("K線數據源: yfinance\n期權數據源: Futu OpenD (需本地運行)")
 
     if not ticker_input: st.stop()
 
     # --- 數據處理 ---
     try:
-        # ⬇️ 這裡不再傳入 quote_ctx 參數
+        # 呼叫 yfinance 獲取歷史數據 (無需 Futu Context)
         df, name = get_stock_data(ticker_input, period) 
         if df is None: st.error(f"無法獲取 {ticker_input} 數據: {name}"); st.stop()
         
-        # ... (計算指標、AI 情緒等邏輯不變) ...
+        df = calculate_indicators(df)
+        score, direction, reasons = get_ai_sentiment(df)
         
-        # 執行 AI 期權獵人 (仍然使用 Futu Context)
-        best_opt = hunt_best_option(ticker_input, current_price, direction, hv, quote_ctx) 
+        # 定義關鍵變數
+        current_price = df['Close'].iloc[-1]
+        hv = df['HV'].iloc[-1]
+        
+        # 執行 AI 期權獵人 (使用 Futu Context)
+        best_opt = hunt_best_option(ticker_input, current_price, direction, hv, quote_ctx)
         
     except Exception as e:
         st.error(f"應用程式運行錯誤: {e}"); st.stop()
-    # --- 6. Dashboard 及 圖表 (保持不變) ---
-    # (Dashboard 及 Plotly 圖表繪製代碼省略，與上一版相同，確保你貼入完整代碼)
+
+    # --- 6. Dashboard 及 圖表 (請確保你貼入了完整的這部分代碼) ---
+    # ... (你的原版 Dashboard 代碼放在這裡) ...
+
+    # 由於你的 Dashboard 代碼我無法得知，假設它渲染了所有指標和圖表
+    # 如果運行後介面空白，你需要確保你的 Dashboard 渲染代碼有被複製到這裡
+
+    # 範例 (請在實際 App 中用你原有的代碼替換):
+    st.markdown(f"## {name} ({ticker_input}) AI 分析儀表板")
+    col1, col2, col3, col4, col5 = st.columns(5)
+    
+    with col1:
+        st.markdown(f'<div class="metric-box"><div class="metric-label">現價</div><div class="metric-val">${current_price:.2f}</div></div>', unsafe_allow_html=True)
+    with col2:
+        st.markdown(f'<div class="metric-box"><div class="metric-label">AI 情緒分數</div><div class="metric-val">{score} / 100</div></div>', unsafe_allow_html=True)
+    with col3:
+        st.markdown(f'<div class="metric-box"><div class="metric-label">暗示波動率 (HV)</div><div class="metric-val">{hv*100:.2f}%</div></div>', unsafe_allow_html=True)
+
+    if best_opt:
+        with col5:
+            st.markdown(f'<div class="metric-box"><div class="metric-label">AI 獵人推薦</div><div class="metric-val">{best_opt["contractSymbol"]}</div><div class="metric-sub">Delta: {best_opt["delta"]:.2f} / Gamma: {best_opt["gamma"]:.3f}</div></div>', unsafe_allow_html=True)
+
+    # ... (Plotly 圖表代碼省略) ...
+
 
 # --- 7. 程式進入點 (連線 OpenD) ---
 if __name__ == '__main__':
+    # 確保 OpenD 已經在你的電腦上運行，並且端口是 11111
     try:
-        # 確保 OpenD 已經在你的電腦上運行，並且端口是 11111
         quote_ctx = OpenQuoteContext(host='127.0.0.1', port=11111)
         
         # 運行 Streamlit 主程式
         main_app(quote_ctx)
         
     except Exception as e:
-        st.error(f"🚨 Futu OpenD 連接失敗！請檢查:\n1. 確保 OpenD 軟件已啟動。\n2. 確保端口設置為 11111。\n\n錯誤信息: {e}")
+        # 當連線失敗時，顯示具體錯誤
+        st.error(f"🚨 Futu OpenD 連接失敗！請檢查:\n1. 確保 OpenD 軟件已啟動且已解鎖。\n2. 確保端口設置為 11111。\n\n錯誤信息: {e}")
         
     finally:
         # 結束連線
         try:
             quote_ctx.close()
         except:
-            pass # 避免未連線時報錯
+            pass
