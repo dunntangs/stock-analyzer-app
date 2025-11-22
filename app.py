@@ -120,7 +120,7 @@ def hunt_best_option(ticker_obj, current_price, direction, hv):
     """
     best_option = None
     
-    try: # <--- try 區塊開始
+    try:
         exps = ticker_obj.options
         if not exps: return None
         
@@ -130,7 +130,6 @@ def hunt_best_option(ticker_obj, current_price, direction, hv):
         
         today = datetime.now()
         for date_str in exps:
-            # 這是之前出錯行數周圍的邏輯
             exp_date = datetime.strptime(date_str, "%Y-%m-%d")
             days_to_exp = (exp_date - today).days
             if min_days <= days_to_exp <= max_days:
@@ -180,7 +179,7 @@ def hunt_best_option(ticker_obj, current_price, direction, hv):
             
         return best_option
         
-    except Exception as e: # <--- except 區塊在這裡，確保 try 區塊是完整的
+    except Exception as e:
         return None
 
 # --- 4. 介面 Sidebar ---
@@ -249,14 +248,11 @@ try:
     
     # 修正日期處理：確保 future_dates 是 pd.Timestamp 類型
     future_dates = []
-    # 使用最後一個有效日期作為起點，確保它是可運算的 Timestamp
     last_valid_date = pd.to_datetime(df.index[-1].date()) 
     current_date = last_valid_date
     while len(future_dates) < 5:
         current_date += timedelta(days=1)
-        # 檢查是否為交易日 (0=週一, 4=週五)
         if current_date.weekday() < 5: 
-            # 統一日期類型，忽略時區差異
             future_dates.append(pd.to_datetime(current_date))
             
 except Exception as e:
@@ -293,4 +289,138 @@ with c2:
     st.markdown(f"""
     <div class="metric-box">
         <div class="metric-label">AI 趨勢綜合分析</div>
-        <div class="metric-val" style="color
+        <div class="metric-val" style="color:{score_color}">{score}/100</div>
+        <div class="metric-sub" style="color:{score_color}; font-weight:bold; margin-bottom:10px;">{sentiment_text}</div>
+        <div style="font-size:12px; color:#999; line-height:1.4;">{reason_html}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+# C. AI 期權推介卡片
+with c3:
+    if best_opt:
+        opt_type_text = "看漲 (CALL)" if best_opt['type'] == 'call' else "看跌 (PUT)"
+        opt_type_abbr = "C" if best_opt['type'] == 'call' else "P"
+        opt_color = TV_UP_COLOR if best_opt['type'] == "call" else TV_DOWN_COLOR
+        
+        raw_symbol = best_opt['contractSymbol'] 
+        strike_clean = best_opt['strike']       
+        type_index = raw_symbol.find('C') if 'C' in raw_symbol else raw_symbol.find('P')
+        
+        if type_index != -1:
+            date_part = raw_symbol[:type_index]
+            cleaned_symbol = f"{date_part} {opt_type_abbr}{strike_clean:.2f}"
+        else:
+            cleaned_symbol = raw_symbol
+        
+        st.markdown(f"""
+        <div class="metric-box" style="border-color: {opt_color};">
+            <div class="recomm-badge">{opt_type_text} - AI 嚴選</div>
+            <div class="opt-title">{cleaned_symbol}</div>
+            
+            <div class="opt-detail-grid">
+                <div>到期日: <span style="color:#fff">{best_opt['expiry']}</span></div>
+                <div>行使價: <span style="color:#fff">${best_opt['strike']:.2f}</span></div>
+                <div>最新價: <span style="color:#fff; font-size:16px;">${best_opt['price']:.2f}</span></div>
+                <div>引伸波幅 (IV): <span style="color:#ffd700">{best_opt['iv']*100:.1f}%</span></div>
+            </div>
+        </div>""", unsafe_allow_html=True) # <<< 修正：確保三引號在這裡關閉
+
+    else:
+        st.markdown(f"""
+        <div class="metric-box">
+            <div class="metric-label">AI 期權獵人</div>
+            <div style="margin-top:20px; color:#999;">
+                ⚠️ 暫無合適期權推介。<br>
+                <small>可能原因：數據源無即時期權鏈、流動性不足或市場處於休市。</small>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+# D. AI 推估卡片
+with c4:
+    st.markdown(f"""
+    <div class="metric-box">
+        <div class="metric-label">AI 推估未來 5 日走勢</div>
+        <div style="margin-top:10px;">
+            <div style="display: flex; justify-content: space-between; gap: 10px;">
+                {
+                    "".join([
+                        f'''
+                        <div style="text-align: center;">
+                            <div class="forecast-day">{future_dates[i].strftime('%m/%d')}</div>
+                            <div class="forecast-price" style="color: {'#089981' if predicted_prices[i] >= current_price else '#f23645'}">
+                                ${predicted_prices[i]:.2f}
+                            </div>
+                        </div>
+                        ''' for i in range(5)
+                    ])
+                }
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+# --- 7. 圖表 ---
+st.markdown("<br>", unsafe_allow_html=True)
+
+fig = make_subplots(rows=4, cols=1, 
+                    shared_xaxes=True, 
+                    vertical_spacing=0.03, 
+                    row_heights=[0.5, 0.15, 0.2, 0.2])
+
+# 預測線的數據準備
+forecast_index = df.index[-1:].tolist() + future_dates
+forecast_prices_plot = [df['Close'].iloc[-1]] + predicted_prices
+
+# Row 1: K線 and MAs
+fig.add_trace(go.Candlestick(
+    x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
+    name="K線", increasing_line_color=TV_UP_COLOR, decreasing_line_color=TV_DOWN_COLOR
+), row=1, col=1)
+
+# 加入 AI 預測線
+fig.add_trace(go.Scatter(
+    x=forecast_index, y=forecast_prices_plot, 
+    line=dict(color='#ff9900', width=2, dash='dot'), 
+    name='AI 預測',
+    mode='lines+markers', marker=dict(size=4, symbol='circle') 
+), row=1, col=1)
+
+# MA Lines
+fig.add_trace(go.Scatter(x=df.index, y=df['SMA10'], line=dict(color='#ffcccc', width=1), name='MA10'), row=1, col=1) 
+fig.add_trace(go.Scatter(x=df.index, y=df['SMA20'], line=dict(color='#2962ff', width=1), name='MA20'), row=1, col=1) 
+fig.add_trace(go.Scatter(x=df.index, y=df['SMA50'], line=dict(color='#ff6d00', width=1), name='MA50'), row=1, col=1) 
+fig.add_trace(go.Scatter(x=df.index, y=df['SMA100'], line=dict(color='#9c27b0', width=1), name='MA100'), row=1, col=1) 
+fig.add_trace(go.Scatter(x=df.index, y=df['SMA200'], line=dict(color='#e91e63', width=1.5), name='MA200'), row=1, col=1) 
+
+
+# Row 2: Volume
+colors_vol = [TV_DOWN_COLOR if c < o else TV_UP_COLOR for c, o in zip(df['Close'], df['Open'])]
+fig.add_trace(go.Bar(x=df.index, y=df['Volume'], marker_color=colors_vol, name='Volume'), row=2, col=1)
+
+# Row 3: RSI
+fig.add_trace(go.Scatter(x=df.index, y=df['RSI'], line=dict(color='#ff9900', width=1.5), name='RSI'), row=3, col=1)
+fig.add_hline(y=70, line_dash="dash", line_color="#f23645", row=3, col=1, name='超買')
+fig.add_hline(y=30, line_dash="dash", line_color=TV_UP_COLOR, row=3, col=1, name='超賣')
+fig.update_yaxes(title_text="RSI", row=3, col=1, range=[0, 100])
+
+# Row 4: MACD
+fig.add_trace(go.Bar(x=df.index, y=df['MACD'] - df['Signal'], name='MACD 柱',
+                     marker_color=['#089981' if v >= 0 else '#f23645' for v in (df['MACD'] - df['Signal'])]), 
+              row=4, col=1)
+fig.add_trace(go.Scatter(x=df.index, y=df['MACD'], line=dict(color='#2962ff'), name='MACD'), row=4, col=1)
+fig.add_trace(go.Scatter(x=df.index, y=df['Signal'], line=dict(color='#ff6d00'), name='Signal'), row=4, col=1)
+fig.update_yaxes(title_text="MACD", row=4, col=1)
+
+
+fig.update_layout(
+    height=900, margin=dict(t=10, b=10, l=10, r=40), 
+    paper_bgcolor=TV_BG_COLOR, plot_bgcolor=TV_BG_COLOR, font=dict(color=TEXT_COLOR),
+    showlegend=False, hovermode='x unified', dragmode='pan'
+)
+
+fig.update_xaxes(showgrid=True, gridcolor="#333", rangeslider_visible=False)
+fig.update_yaxes(showgrid=True, gridcolor="#333")
+
+st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True})
