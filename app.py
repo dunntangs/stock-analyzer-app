@@ -6,10 +6,10 @@ from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import scipy.stats as si
 from futu import *
-import yfinance as yf # 引入 yfinance 獲取歷史數據
+import yfinance as yf 
 
 
-# --- 1. 頁面設定 (TradingView 風格) ---
+# --- 1. 頁面設定與樣式 ---
 st.set_page_config(page_title="TradeGenius AI Options", layout="wide", page_icon="⚡", initial_sidebar_state="expanded")
 
 TV_BG_COLOR = "#131722"
@@ -39,6 +39,7 @@ st.markdown(f"""
 </style>
 """, unsafe_allow_html=True)
 
+
 # --- 2. 數學模型: Black-Scholes Greeks 計算 ---
 
 def black_scholes(S, K, T, r, sigma, option_type="call"):
@@ -58,7 +59,8 @@ def black_scholes(S, K, T, r, sigma, option_type="call"):
     except:
         return 0, 0
 
-# --- 3. 數據獲取 (使用 yfinance 獲取歷史數據，繞過 Futu K 線錯誤) ---
+
+# --- 3. 數據獲取 (使用 yfinance 獲取歷史數據) ---
 
 @st.cache_data(ttl=3600)
 def get_stock_data(code, period):
@@ -103,6 +105,66 @@ def calculate_indicators(df):
     df['Log_Ret'] = np.log(df['Close'] / df['Close'].shift(1))
     df['HV'] = df['Log_Ret'].rolling(20).std() * np.sqrt(252)
     return df
+
+
+def create_candlestick_chart(df, ticker_name):
+    """創建帶有 MA 和 MACD/RSI 的 K 線圖"""
+    
+    # 創建主 K 線圖
+    fig = make_subplots(rows=3, cols=1, shared_xaxes=True, 
+                        vertical_spacing=0.05, row_heights=[0.6, 0.2, 0.2])
+
+    fig.add_trace(go.Candlestick(x=df.index,
+                                 open=df['Open'],
+                                 high=df['High'],
+                                 low=df['Low'],
+                                 close=df['Close'],
+                                 name='K線',
+                                 increasing_line_color=TV_UP_COLOR,
+                                 decreasing_line_color=TV_DOWN_COLOR), row=1, col=1)
+
+    # 加入移動平均線
+    for ma in [20, 50]:
+        fig.add_trace(go.Scatter(x=df.index, y=df[f'SMA{ma}'], name=f'MA{ma}', 
+                                 line=dict(width=1)), row=1, col=1)
+
+    # MACD 子圖
+    fig.add_trace(go.Bar(x=df.index, y=df['MACD'] - df['Signal'], name='MACD 柱',
+                         marker_color='#2962ff'), row=2, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df['MACD'], name='MACD', line=dict(color='#ff9900')), row=2, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df['Signal'], name='Signal', line=dict(color='#f6006e')), row=2, col=1)
+
+    # RSI 子圖
+    fig.add_trace(go.Scatter(x=df.index, y=df['RSI'], name='RSI', line=dict(color='#008080')), row=3, col=1)
+    fig.add_hline(y=70, line_dash="dash", line_color="#f23645", row=3, col=1)
+    fig.add_hline(y=30, line_dash="dash", line_color=TV_UP_COLOR, row=3, col=1)
+
+    # 佈局美化
+    fig.update_layout(
+        title=f'<span style="color:{TEXT_COLOR}; font-size:24px;">{ticker_name} K線分析 ({df.index[-1].strftime("%Y-%m-%d")})</span>',
+        height=900,
+        plot_bgcolor=TV_BG_COLOR,
+        paper_bgcolor=TV_BG_COLOR,
+        xaxis=dict(showgrid=False),
+        yaxis=dict(showgrid=False, title='價格'),
+        xaxis2=dict(showgrid=False),
+        yaxis2=dict(showgrid=False, title='MACD'),
+        xaxis3=dict(showgrid=False),
+        yaxis3=dict(showgrid=False, title='RSI'),
+        font=dict(color=TEXT_COLOR),
+        xaxis_rangeslider_visible=False,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
+
+    # 設置每個子圖的背景
+    fig.update_xaxes(rangeselector_visible=False, 
+                     rangeslider_visible=False, 
+                     showgrid=False, 
+                     minor_griddash="dot")
+    fig.update_yaxes(showgrid=True, gridcolor='#2a2e39')
+    
+    return fig
+
 
 def get_ai_sentiment(df):
     score = 50
@@ -157,8 +219,6 @@ def hunt_best_option(code, current_price, direction, hv, _quote_ctx):
         candidates = []
         r = 0.05 
         T = (datetime.strptime(target_date_str, "%Y-%m-%d") - today).days / 365.0
-        
-        # ... (後續的期權篩選邏輯不變) ...
         
         for index, row in df_chain.iterrows():
             if 'implied_volatility' not in row or row['implied_volatility'] <= 0: continue
@@ -232,7 +292,7 @@ def main_app(quote_ctx):
 
     # --- 數據處理 ---
     try:
-        # 呼叫 yfinance 獲取歷史數據 (無需 Futu Context)
+        # 呼叫 yfinance 獲取歷史數據
         df, name = get_stock_data(ticker_input, period) 
         if df is None: st.error(f"無法獲取 {ticker_input} 數據: {name}"); st.stop()
         
@@ -249,13 +309,8 @@ def main_app(quote_ctx):
     except Exception as e:
         st.error(f"應用程式運行錯誤: {e}"); st.stop()
 
-    # --- 6. Dashboard 及 圖表 (請確保你貼入了完整的這部分代碼) ---
-    # ... (你的原版 Dashboard 代碼放在這裡) ...
-
-    # 由於你的 Dashboard 代碼我無法得知，假設它渲染了所有指標和圖表
-    # 如果運行後介面空白，你需要確保你的 Dashboard 渲染代碼有被複製到這裡
-
-    # 範例 (請在實際 App 中用你原有的代碼替換):
+    # --- 6. Dashboard 及 圖表渲染 ---
+    
     st.markdown(f"## {name} ({ticker_input}) AI 分析儀表板")
     col1, col2, col3, col4, col5 = st.columns(5)
     
@@ -265,18 +320,23 @@ def main_app(quote_ctx):
         st.markdown(f'<div class="metric-box"><div class="metric-label">AI 情緒分數</div><div class="metric-val">{score} / 100</div></div>', unsafe_allow_html=True)
     with col3:
         st.markdown(f'<div class="metric-box"><div class="metric-label">暗示波動率 (HV)</div><div class="metric-val">{hv*100:.2f}%</div></div>', unsafe_allow_html=True)
+    with col4:
+        st.markdown(f'<div class="metric-box"><div class="metric-label">AI 傾向</div><div class="metric-val" style="color:{"#089981" if direction=="call" else "#f23645"}">{direction.upper()}</div></div>', unsafe_allow_html=True)
+
 
     if best_opt:
         with col5:
             st.markdown(f'<div class="metric-box"><div class="metric-label">AI 獵人推薦</div><div class="metric-val">{best_opt["contractSymbol"]}</div><div class="metric-sub">Delta: {best_opt["delta"]:.2f} / Gamma: {best_opt["gamma"]:.3f}</div></div>', unsafe_allow_html=True)
 
-    # ... (Plotly 圖表代碼省略) ...
+    # 7. 顯示圖表
+    st.plotly_chart(create_candlestick_chart(df, name), use_container_width=True)
 
 
-# --- 7. 程式進入點 (連線 OpenD) ---
+# --- 8. 程式進入點 (連線 OpenD) ---
 if __name__ == '__main__':
     # 確保 OpenD 已經在你的電腦上運行，並且端口是 11111
     try:
+        # 連線 Futu OpenD
         quote_ctx = OpenQuoteContext(host='127.0.0.1', port=11111)
         
         # 運行 Streamlit 主程式
