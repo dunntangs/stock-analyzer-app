@@ -76,12 +76,12 @@ def get_stock_data(code, period, _quote_ctx):
     """使用 Futu API 獲取 K 線數據"""
     start_date, end_date = period_to_dates(period)
     
-    # 獲取 K 線數據
-    ret, df = quote_ctx.get_history_kline(
+    # 獲取 K 線數據：改用 get_kline，繞過 get_history_kline 的問題
+    # 我們獲取最近 2500 根 K 線，足夠進行技術分析
+    ret, df = _quote_ctx.get_kline(  
         code, 
-        start=start_date, 
-        end=end_date, 
-        kline_type=KLType.K_DAY, 
+        num=2500,         # 獲取最近 2500 根 K 線數據
+        ktype=KLType.K_DAY, 
         autype=AuType.QFQ # 前復權
     )
     
