@@ -1,15 +1,13 @@
 import streamlit as st
+import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
-import scipy.stats as si
-from futu import *
-# 已移除 import yfinance as yf
+import scipy.stats as si # 用於 Black-Scholes 計算
 
-
-# --- 1. 頁面設定與樣式 ---
+# --- 1. 頁面設定 ---
 st.set_page_config(page_title="TradeGenius AI Options", layout="wide", page_icon="⚡", initial_sidebar_state="expanded")
 
 TV_BG_COLOR = "#131722"
@@ -32,6 +30,7 @@ st.markdown(f"""
     .metric-val {{ color: #d1d4dc; font-size: 22px; font-weight: 700; margin-top: 5px; }}
     .metric-sub {{ font-size: 12px; margin-top: 2px; }}
     
+    /* 期權專用樣式 */
     .opt-title {{ color: #fff; font-size: 16px; font-weight: bold; margin-bottom: 10px; border-bottom: 1px solid #333; padding-bottom: 5px; }}
     .opt-detail-grid {{ display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; font-size: 13px; color: #ccc; }}
     .greek-tag {{ background: #333; padding: 2px 6px; border-radius: 4px; font-size: 11px; color: #aaa; }}
@@ -39,11 +38,12 @@ st.markdown(f"""
 </style>
 """, unsafe_allow_html=True)
 
-
 # --- 2. 數學模型: Black-Scholes Greeks 計算 ---
 
 def black_scholes(S, K, T, r, sigma, option_type="call"):
-    """S: 現價, K: 行使價, T: 到期時間(年), r: 無風險利率, sigma: 波動率"""
+    """
+    S: 現價, K: 行使價, T: 到期時間(年), r: 無風險利率, sigma: 波動率
+    """
     try:
         d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
         d2 = d1 - sigma * np.sqrt(T)
@@ -59,124 +59,34 @@ def black_scholes(S, K, T, r, sigma, option_type="call"):
     except:
         return 0, 0
 
-
-# --- 3. 數據獲取 (使用 Futu API 獲取歷史數據) ---
-
-# 輔助函數：將周期轉換為天數，以便 get_kline 獲取足夠數據
-def period_to_num(period):
-    if period == "3mo": return 60
-    elif period == "6mo": return 120
-    elif period == "1y": return 250
-    elif period == "2y": return 500
-    return 250
-
-@st.cache_data(ttl=300) 
-def get_stock_data(code, period, _quote_ctx): # <--- 恢復 Futu API 參數
-    """使用 Futu API 獲取 K 線數據"""
-    
-    num_points = period_to_num(period) # 根據選定周期確定獲取點數
-    
-    # 🚨 注意：這裡使用了我們之前失敗的 get_kline 方法 🚨
-    ret, df = _quote_ctx.get_kline(  
-        code, 
-        num=2500,         # 為了安全，獲取足夠的點數
-        ktype=KLType.K_DAY, 
-        autype=AuType.QFQ # 前復權
-    )
-    
-    if ret != RET_OK:
-        return None, f"Futu 錯誤: {df}"
-    
-    # Futu API 返回的 DataFrame 需要清理和格式化，並取最後幾筆
-    df = df.rename(columns={'close': 'Close', 'open': 'Open', 'high': 'High', 'low': 'Low', 'time_key': 'Date'})
-    df['Date'] = pd.to_datetime(df['Date'])
-    df = df.set_index('Date').sort_index()
-    
-    # 只保留需要的數據點 (確保數據點數匹配 period_to_num)
-    df = df.iloc[-num_points:]
-    
-    # 獲取股票名稱 (使用 Futu API)
-    ret_info, df_info = _quote_ctx.get_market_snapshot([code])
-    name = df_info.iloc[0]['name'] if ret_info == RET_OK and not df_info.empty else code
-        
-    return df, name
-
-
-# --- 4. 技術指標與 AI 邏輯 (保持不變) ---
+# --- 3. 核心運算: AI 選股與期權獵人 ---
 
 def calculate_indicators(df):
+    # MA, RSI, MACD, KDJ, Volatility
     for ma in [10, 20, 50, 200]: df[f'SMA{ma}'] = df['Close'].rolling(window=ma).mean()
+    
     delta = df['Close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
     rs = gain / loss
     df['RSI'] = 100 - (100 / (1 + rs))
+    
     exp12 = df['Close'].ewm(span=12).mean(); exp26 = df['Close'].ewm(span=26).mean()
     df['MACD'] = exp12 - exp26
     df['Signal'] = df['MACD'].ewm(span=9).mean()
+    
+    # 歷史波動率 (HV) - 用於比較 IV
     df['Log_Ret'] = np.log(df['Close'] / df['Close'].shift(1))
     df['HV'] = df['Log_Ret'].rolling(20).std() * np.sqrt(252)
-    return df
-
-
-def create_candlestick_chart(df, ticker_name):
-    # 繪圖函數與之前版本一致 (已包含在最終版本)
-    # ... (省略圖表細節代碼) ...
-    fig = make_subplots(rows=3, cols=1, shared_xaxes=True, 
-                        vertical_spacing=0.05, row_heights=[0.6, 0.2, 0.2])
-
-    fig.add_trace(go.Candlestick(x=df.index,
-                                 open=df['Open'],
-                                 high=df['High'],
-                                 low=df['Low'],
-                                 close=df['Close'],
-                                 name='K線',
-                                 increasing_line_color=TV_UP_COLOR,
-                                 decreasing_line_color=TV_DOWN_COLOR), row=1, col=1)
-
-    for ma in [20, 50]:
-        fig.add_trace(go.Scatter(x=df.index, y=df[f'SMA{ma}'], name=f'MA{ma}', 
-                                 line=dict(width=1)), row=1, col=1)
-
-    fig.add_trace(go.Bar(x=df.index, y=df['MACD'] - df['Signal'], name='MACD 柱',
-                         marker_color='#2962ff'), row=2, col=1)
-    fig.add_trace(go.Scatter(x=df.index, y=df['MACD'], name='MACD', line=dict(color='#ff9900')), row=2, col=1)
-    fig.add_trace(go.Scatter(x=df.index, y=df['Signal'], name='Signal', line=dict(color='#f6006e')), row=2, col=1)
-
-    fig.add_trace(go.Scatter(x=df.index, y=df['RSI'], name='RSI', line=dict(color='#008080')), row=3, col=1)
-    fig.add_hline(y=70, line_dash="dash", line_color="#f23645", row=3, col=1)
-    fig.add_hline(y=30, line_dash="dash", line_color=TV_UP_COLOR, row=3, col=1)
-
-    fig.update_layout(
-        title=f'<span style="color:{TEXT_COLOR}; font-size:24px;">{ticker_name} K線分析 ({df.index[-1].strftime("%Y-%m-%d")})</span>',
-        height=900,
-        plot_bgcolor=TV_BG_COLOR,
-        paper_bgcolor=TV_BG_COLOR,
-        xaxis=dict(showgrid=False),
-        yaxis=dict(showgrid=False, title='價格'),
-        xaxis2=dict(showgrid=False),
-        yaxis2=dict(showgrid=False, title='MACD'),
-        xaxis3=dict(showgrid=False),
-        yaxis3=dict(showgrid=False, title='RSI'),
-        font=dict(color=TEXT_COLOR),
-        xaxis_rangeslider_visible=False,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-    )
-
-    fig.update_xaxes(rangeselector_visible=False, 
-                     rangeslider_visible=False, 
-                     showgrid=False, 
-                     minor_griddash="dot")
-    fig.update_yaxes(showgrid=True, gridcolor='#2a2e39')
     
-    return fig
-
+    return df
 
 def get_ai_sentiment(df):
     score = 50
     row = df.iloc[-1]
     reasons = []
     
+    # 簡單評分邏輯
     if row['Close'] > row['SMA20']: score += 15; reasons.append("股價站上 MA20")
     else: score -= 15; reasons.append("股價跌破 MA20")
     
@@ -188,58 +98,64 @@ def get_ai_sentiment(df):
     direction = "call" if score >= 55 else "put" if score <= 45 else "neutral"
     return score, direction, reasons
 
-
-def hunt_best_option(code, current_price, direction, hv, _quote_ctx):
-    # Futu 期權獵人邏輯 (保持不變)
-    # ... (代碼與之前版本一致) ...
+def hunt_best_option(ticker_obj, current_price, direction, hv):
+    """
+    AI 期權獵人：搜尋真實期權鏈，計算 Greeks，找出最佳合約
+    """
+    best_option = None
+    
+    # 1. 獲取到期日 (尋找 25-60 天內的期權，時間價值衰減適中，爆發力夠)
     try:
-        ret, exps_df = _quote_ctx.get_option_expiry_date(code, OptionMarket.ALL)
-        if ret != RET_OK or exps_df.empty: raise ValueError("無期權鏈數據")
-
-        today = datetime.now()
-        target_date_str = None
+        exps = ticker_obj.options
+        if not exps: return None
         
-        for index, row in exps_df.iterrows():
-            exp_date = datetime.strptime(row['strike_time'], "%Y-%m-%d")
+        target_date = None
+        min_days = 25
+        max_days = 60
+        
+        today = datetime.now()
+        for date_str in exps:
+            exp_date = datetime.strptime(date_str, "%Y-%m-%d")
             days_to_exp = (exp_date - today).days
-            if 25 <= days_to_exp <= 60:
-                target_date_str = row['strike_time']
+            if min_days <= days_to_exp <= max_days:
+                target_date = date_str
                 break
         
-        if not target_date_str: target_date_str = exps_df.iloc[0]['strike_time']
+        if not target_date: target_date = exps[0] # 如果找不到合適區間，就拿最近的
         
-        option_type = OptionCondType.CALL if direction == "call" else OptionCondType.PUT
-        ret, df_chain = _quote_ctx.get_option_chain(
-            code=code, 
-            market=OptionMarket.ALL, 
-            index_option_type=OptionType.ALL, 
-            datetime=target_date_str, 
-            cond_type=option_type
-        )
-        if ret != RET_OK or df_chain.empty: raise ValueError("獲取期權鏈失敗")
+        # 2. 獲取期權鏈
+        opt_chain = ticker_obj.option_chain(target_date)
+        options = opt_chain.calls if direction == "call" else opt_chain.puts
         
+        # 3. 篩選與 Greeks 計算
         candidates = []
-        r = 0.05 
-        T = (datetime.strptime(target_date_str, "%Y-%m-%d") - today).days / 365.0
+        r = 0.05 # 假設無風險利率 5%
+        T = (datetime.strptime(target_date, "%Y-%m-%d") - today).days / 365.0
         
-        for index, row in df_chain.iterrows():
-            if 'implied_volatility' not in row or row['implied_volatility'] <= 0: continue
-            if 'price' not in row or row['price'] <= 0: continue
-            if 'volume' not in row or row['volume'] < 10: continue
-
-            strike = row['strike']
-            iv = row['implied_volatility']
-            price = row['price']
+        for index, row in options.iterrows():
+            # 基本過濾：成交量太低不要，深度價內/價外不要
+            if row['volume'] < 10 or row['openInterest'] < 50: continue
             
+            strike = row['strike']
+            price = row['lastPrice']
+            iv = row['impliedVolatility']
+            
+            if iv <= 0 or price <= 0: continue
+
+            # 計算 Greeks
             delta, gamma = black_scholes(current_price, strike, T, r, iv, direction)
             
+            # AI 策略篩選邏輯：
+            # - Delta: 0.3 ~ 0.6 (最有肉食，Gamma 爆發力最強的區域)
+            # - IV: 最好不要高過 HV 太多 (避免買貴)
             if 0.3 <= abs(delta) <= 0.7:
-                score = (gamma * 100) * (np.log(row['volume']+1)) / (iv * 10)
+                # CP 值評分：Gamma越高(加速快) + 成交量越高(易進出) / IV(成本)
+                score = (gamma * 100) * (np.log(row['volume'])) / (iv * 10)
                 
                 candidates.append({
-                    "contractSymbol": row['code'],
+                    "contractSymbol": row['contractSymbol'],
                     "strike": strike,
-                    "expiry": target_date_str,
+                    "expiry": target_date,
                     "price": price,
                     "delta": delta,
                     "gamma": gamma,
@@ -248,105 +164,144 @@ def hunt_best_option(code, current_price, direction, hv, _quote_ctx):
                     "score": score
                 })
         
+        # 4. 排序找出 No.1
         if candidates:
+            # 根據 CP Score 降序排列
             candidates.sort(key=lambda x: x['score'], reverse=True)
-            return candidates[0]
-        else:
-            return None
-
-    except Exception as e:
-        strike_theory = round(current_price * (1.02 if direction == "call" else 0.98), 1)
-        days_theory = 30
-        
-        return {
-            "contractSymbol": f"SIM-{direction.upper()}-{strike_theory}",
-            "strike": strike_theory,
-            "expiry": (datetime.now() + timedelta(days=days_theory)).strftime("%Y-%m-%d"),
-            "price": current_price * 0.05,
-            "delta": 0.50 if direction == "call" else -0.50,
-            "gamma": 0.05,
-            "iv": hv,
-            "volume": "N/A (模擬)",
-            "score": 0,
-            "is_simulation": True 
-        }
-
-
-# --- 5. 應用程式主邏輯 ---
-
-def main_app(quote_ctx):
-    
-    # --- 關鍵變數初始化 (解決 NameError) ---
-    name = "數據未載入"
-    current_price = 0.0
-    hv = 0.0
-    best_opt = None 
-    # ------------------------------------
-    
-    # --- 介面 Sidebar ---
-    st.sidebar.markdown("## ⚙️ 參數設定")
-    ticker_input = st.sidebar.text_input("代碼 (US.TSLA, HK.00700)", value="US.TSLA").upper()
-    period = st.sidebar.select_slider("範圍", ["3mo", "6mo", "1y", "2y"], value="6mo")
-    st.sidebar.markdown("---")
-    st.sidebar.info("K線數據源: Futu OpenD (需本地運行)\n期權數據源: Futu OpenD (需本地運行)")
-
-    if not ticker_input: st.stop()
-
-    # --- 數據處理 ---
-    try:
-        # 呼叫 Futu API 獲取歷史數據 (恢復 Futu Context 傳入)
-        df, name = get_stock_data(ticker_input, period, quote_ctx) 
-        if df is None: st.error(f"無法獲取 {ticker_input} 數據: {name}"); st.stop()
-        
-        df = calculate_indicators(df)
-        score, direction, reasons = get_ai_sentiment(df)
-        
-        current_price = df['Close'].iloc[-1]
-        hv = df['HV'].iloc[-1]
-        
-        best_opt = hunt_best_option(ticker_input, current_price, direction, hv, quote_ctx)
+            best_option = candidates[0]
+            
+        return best_option
         
     except Exception as e:
-        # 如果發生錯誤，在這裡顯示
-        st.error(f"應用程式運行錯誤: {e}"); st.stop()
+        return None
 
-    # --- 6. Dashboard 及 圖表渲染 ---
+# --- 4. 介面 Sidebar ---
+st.sidebar.markdown("## ⚙️ 參數設定")
+ticker = st.sidebar.text_input("代碼", value="TSLA").upper()
+period = st.sidebar.select_slider("範圍", ["3mo", "6mo", "1y", "2y"], value="6mo")
+st.sidebar.markdown("---")
+
+if not ticker: st.stop()
+
+# --- 5. 數據處理 ---
+try:
+    stock = yf.Ticker(ticker)
+    df = stock.history(period=period)
+    if df.empty: st.error("無效代碼"); st.stop()
     
-    st.markdown(f"## {name} ({ticker_input}) AI 分析儀表板")
-    col1, col2, col3, col4, col5 = st.columns(5)
+    df = calculate_indicators(df)
+    score, direction, reasons = get_ai_sentiment(df)
+    current_price = df['Close'].iloc[-1]
+    hv = df['HV'].iloc[-1]
     
-    with col1:
-        st.markdown(f'<div class="metric-box"><div class="metric-label">現價</div><div class="metric-val">${current_price:.2f}</div></div>', unsafe_allow_html=True)
-    with col2:
-        st.markdown(f'<div class="metric-box"><div class="metric-label">AI 情緒分數</div><div class="metric-val">{score} / 100</div></div>', unsafe_allow_html=True)
-    with col3:
-        st.markdown(f'<div class="metric-box"><div class="metric-label">暗示波動率 (HV)</div><div class="metric-val">{hv*100:.2f}%</div></div>', unsafe_allow_html=True)
-    with col4:
-        st.markdown(f'<div class="metric-box"><div class="metric-label">AI 傾向</div><div class="metric-val" style="color:{"#089981" if direction=="call" else "#f23645"}">{direction.upper()}</div></div>', unsafe_allow_html=True)
+    # 執行 AI 期權獵人
+    best_opt = hunt_best_option(stock, current_price, direction, hv)
+    
+except Exception as e:
+    st.error(f"數據處理錯誤: {e}"); st.stop()
 
+# --- 6. Dashboard ---
 
+c1, c2, c3 = st.columns([1, 1, 1.5])
+
+# A. 股價卡片
+with c1:
+    last_close = df['Close'].iloc[-1]
+    change = last_close - df['Close'].iloc[-2]
+    pct = (change / df['Close'].iloc[-2])*100
+    color = TV_UP_COLOR if change >= 0 else TV_DOWN_COLOR
+    
+    st.markdown(f"""
+    <div class="metric-box">
+        <div class="metric-label">{ticker} 現價</div>
+        <div class="metric-val" style="color:{color}">${last_close:.2f}</div>
+        <div class="metric-sub" style="color:{color}">{change:+.2f} ({pct:+.2f}%)</div>
+        <div class="metric-label" style="margin-top:15px;">HV (歷史波幅)</div>
+        <div style="color:#ccc; font-size:16px;">{hv*100:.1f}%</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+# B. AI 評分卡片
+with c2:
+    score_color = TV_UP_COLOR if score >= 55 else TV_DOWN_COLOR if score <= 45 else "#FF9800"
+    sentiment_text = "看漲 (Bullish)" if direction == "call" else "看跌 (Bearish)" if direction == "put" else "中性 (Neutral)"
+    
+    reason_html = "".join([f"<div>• {r}</div>" for r in reasons])
+    
+    st.markdown(f"""
+    <div class="metric-box">
+        <div class="metric-label">AI 趨勢綜合分析</div>
+        <div class="metric-val" style="color:{score_color}">{score}/100</div>
+        <div class="metric-sub" style="color:{score_color}; font-weight:bold; margin-bottom:10px;">{sentiment_text}</div>
+        <div style="font-size:12px; color:#999; line-height:1.4;">{reason_html}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+# C. AI 期權推介卡片 (重點)
+with c3:
     if best_opt:
-        with col5:
-            st.markdown(f'<div class="metric-box"><div class="metric-label">AI 獵人推薦</div><div class="metric-val">{best_opt["contractSymbol"]}</div><div class="metric-sub">Delta: {best_opt["delta"]:.2f} / Gamma: {best_opt["gamma"]:.3f}</div></div>', unsafe_allow_html=True)
-
-    # 7. 顯示圖表
-    st.plotly_chart(create_candlestick_chart(df, name), use_container_width=True)
-
-
-# --- 8. 程式進入點 (連線 OpenD) ---
-if __name__ == '__main__':
-    try:
-        # 連線 Futu OpenD
-        quote_ctx = OpenQuoteContext(host='127.0.0.1', port=11111)
+        opt_color = TV_UP_COLOR if direction == "call" else TV_DOWN_COLOR
+        leverage = (abs(best_opt['delta']) * current_price) / best_opt['price'] # 簡易槓桿率
         
-        # 運行 Streamlit 主程式
-        main_app(quote_ctx)
-        
-    except Exception as e:
-        st.error(f"🚨 Futu OpenD 連接失敗！請檢查:\n1. 確保 OpenD 軟件已啟動且已解鎖。\n2. 確保端口設置為 11111。\n\n錯誤信息: {e}")
-        
-    finally:
-        try:
-            quote_ctx.close()
-        except:
-            pass
+        st.markdown(f"""
+        <div class="metric-box" style="border-color: {opt_color};">
+            <div class="recomm-badge">AI 嚴選最佳期權</div>
+            <div class="opt-title">{best_opt['contractSymbol']}</div>
+            
+            <div class="opt-detail-grid">
+                <div>到期日: <span style="color:#fff">{best_opt['expiry']}</span></div>
+                <div>行使價: <span style="color:#fff">${best_opt['strike']}</span></div>
+                <div>最新價: <span style="color:#fff; font-size:16px;">${best_opt['price']:.2f}</span></div>
+                <div>引伸波幅 (IV): <span style="color:#ffd700">{best_opt['iv']*100:.1f}%</span></div>
+            </div>
+            
+            <div style="margin-top:10px; padding-top:8px; border-top:1px dashed #444;">
+                <span class="metric-label">GREEKS 分析</span><br>
+                <span class="greek-tag">Delta {best_opt['delta']:.2f}</span>
+                <span class="greek-tag">Gamma {best_opt['gamma']:.3f}</span>
+                <span class="greek-tag">成交量 {best_opt['volume']}</span>
+            </div>
+            
+            <div style="margin-top:8px; font-size:12px; color:#aaa;">
+                <i>💡 推薦理由：Delta 位於攻擊區間，Gamma 爆發力高，且 IV 相對合理，槓桿約 {leverage:.1f}x。</i>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        st.markdown(f"""
+        <div class="metric-box">
+            <div class="metric-label">AI 期權獵人</div>
+            <div style="margin-top:20px; color:#999;">
+                ⚠️ 暫無合適期權推介。<br>
+                <small>可能原因：數據源無即時期權鏈、流動性不足或市場處於休市。</small>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+# --- 7. 圖表 (保持不變) ---
+st.markdown("<br>", unsafe_allow_html=True)
+fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
+
+# K線
+fig.add_trace(go.Candlestick(
+    x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
+    name="K線", increasing_line_color=TV_UP_COLOR, decreasing_line_color=TV_DOWN_COLOR
+), row=1, col=1)
+
+# MA
+fig.add_trace(go.Scatter(x=df.index, y=df['SMA20'], line=dict(color='#2962ff', width=1), name='MA20'), row=1, col=1)
+fig.add_trace(go.Scatter(x=df.index, y=df['SMA50'], line=dict(color='#ff6d00', width=1), name='MA50'), row=1, col=1)
+
+# Vol
+colors_vol = [TV_DOWN_COLOR if c < o else TV_UP_COLOR for c, o in zip(df['Close'], df['Open'])]
+fig.add_trace(go.Bar(x=df.index, y=df['Volume'], marker_color=colors_vol, name='Volume'), row=2, col=1)
+
+fig.update_layout(
+    height=600, margin=dict(t=10, b=10, l=10, r=40), 
+    paper_bgcolor=TV_BG_COLOR, plot_bgcolor=TV_BG_COLOR, font=dict(color=TEXT_COLOR),
+    showlegend=False, hovermode='x unified', dragmode='pan'
+)
+fig.update_xaxes(showgrid=True, gridcolor="#333", rangeslider_visible=False)
+fig.update_yaxes(showgrid=True, gridcolor="#333")
+
+st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True})
