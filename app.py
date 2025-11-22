@@ -63,7 +63,8 @@ def black_scholes(S, K, T, r, sigma, option_type="call"):
 
 def calculate_indicators(df):
     # MA, RSI, MACD
-    for ma in [10, 20, 50, 200]: df[f'SMA{ma}'] = df['Close'].rolling(window=ma).mean()
+    # *** 變動 1: 加入 10MA 和 100MA ***
+    for ma in [10, 20, 50, 100, 200]: df[f'SMA{ma}'] = df['Close'].rolling(window=ma).mean()
     
     delta = df['Close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(14).mean()
@@ -265,7 +266,6 @@ with c3:
             cleaned_symbol = raw_symbol
         # -------------------
         
-        # *** 修正區域：確保 closing quotes 在 final div 之後沒有額外空行 ***
         st.markdown(f"""
         <div class="metric-box" style="border-color: {opt_color};">
             <div class="recomm-badge">{opt_type_text} - AI 嚴選</div>
@@ -275,7 +275,7 @@ with c3:
                 <div>最新價: <span style="color:#fff; font-size:16px;">${best_opt['price']:.2f}</span></div>
                 <div>引伸波幅 (IV): <span style="color:#ffd700">{best_opt['iv']*100:.1f}%</span></div>
             </div>
-        </div>""", unsafe_allow_html=True) # <<< 移除多餘空行
+        </div>""", unsafe_allow_html=True) # 確保 closing quotes 在 final div 之後沒有額外空行
 
     else:
         st.markdown(f"""
@@ -288,7 +288,7 @@ with c3:
         </div>
         """, unsafe_allow_html=True)
 
-# --- 7. 圖表 (已包含 RSI, MACD, KDJ) ---
+# --- 7. 圖表 (加入 10MA, 100MA, 200MA) ---
 st.markdown("<br>", unsafe_allow_html=True)
 
 fig = make_subplots(rows=4, cols=1, 
@@ -302,8 +302,13 @@ fig.add_trace(go.Candlestick(
     name="K線", increasing_line_color=TV_UP_COLOR, decreasing_line_color=TV_DOWN_COLOR
 ), row=1, col=1)
 
-fig.add_trace(go.Scatter(x=df.index, y=df['SMA20'], line=dict(color='#2962ff', width=1), name='MA20'), row=1, col=1)
-fig.add_trace(go.Scatter(x=df.index, y=df['SMA50'], line=dict(color='#ff6d00', width=1), name='MA50'), row=1, col=1)
+# *** 變動 2: 加入 10MA, 100MA, 200MA 的追蹤線 ***
+fig.add_trace(go.Scatter(x=df.index, y=df['SMA10'], line=dict(color='#ffcccc', width=1), name='MA10'), row=1, col=1) # 淺紅/粉色
+fig.add_trace(go.Scatter(x=df.index, y=df['SMA20'], line=dict(color='#2962ff', width=1), name='MA20'), row=1, col=1) # 藍色
+fig.add_trace(go.Scatter(x=df.index, y=df['SMA50'], line=dict(color='#ff6d00', width=1), name='MA50'), row=1, col=1) # 橙色
+fig.add_trace(go.Scatter(x=df.index, y=df['SMA100'], line=dict(color='#9c27b0', width=1), name='MA100'), row=1, col=1) # 紫色
+fig.add_trace(go.Scatter(x=df.index, y=df['SMA200'], line=dict(color='#e91e63', width=1.5), name='MA200'), row=1, col=1) # 深粉紅 (加粗)
+
 
 # Row 2: Volume
 colors_vol = [TV_DOWN_COLOR if c < o else TV_UP_COLOR for c, o in zip(df['Close'], df['Open'])]
