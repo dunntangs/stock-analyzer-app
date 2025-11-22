@@ -44,7 +44,7 @@ st.markdown(f"""
 </style>
 """, unsafe_allow_html=True)
 
-# --- 2. 數學模型: Black-Scholes Greeks 計算 (省略) ---
+# --- 2. 數學模型: Black-Scholes Greeks 計算 ---
 
 def black_scholes(S, K, T, r, sigma, option_type="call"):
     """
@@ -65,9 +65,10 @@ def black_scholes(S, K, T, r, sigma, option_type="call"):
     except:
         return 0, 0
 
-# --- 3. 核心運算: AI 選股與期權獵人 (省略) ---
+# --- 3. 核心運算: AI 選股與期權獵人 ---
 
 def calculate_indicators(df):
+    # MA, RSI, MACD
     for ma in [10, 20, 50, 100, 200]: df[f'SMA{ma}'] = df['Close'].rolling(window=ma).mean()
     
     delta = df['Close'].diff()
@@ -80,6 +81,7 @@ def calculate_indicators(df):
     df['MACD'] = exp12 - exp26
     df['Signal'] = df['MACD'].ewm(span=9).mean()
     
+    # KDJ (Stochastics) 計算
     low_min = df['Low'].rolling(window=9).min()
     high_max = df['High'].rolling(window=9).max()
     df['RSV'] = (df['Close'] - low_min) / (high_max - low_min) * 100
@@ -87,6 +89,7 @@ def calculate_indicators(df):
     df['D'] = df['K'].ewm(span=3).mean()
     df['J'] = 3 * df['K'] - 2 * df['D']
 
+    # 歷史波動率 (HV)
     df['Log_Ret'] = np.log(df['Close'] / df['Close'].shift(1))
     df['HV'] = df['Log_Ret'].rolling(20).std() * np.sqrt(252)
     
@@ -112,9 +115,12 @@ def get_ai_sentiment(df):
     return score, direction, reasons
 
 def hunt_best_option(ticker_obj, current_price, direction, hv):
+    """
+    AI 期權獵人：搜尋真實期權鏈，計算 Greeks，找出最佳合約
+    """
     best_option = None
-    # ... (省略期權獵人邏輯, 保持不變) ...
-    try:
+    
+    try: # <--- try 區塊開始
         exps = ticker_obj.options
         if not exps: return None
         
@@ -124,4 +130,167 @@ def hunt_best_option(ticker_obj, current_price, direction, hv):
         
         today = datetime.now()
         for date_str in exps:
+            # 這是之前出錯行數周圍的邏輯
             exp_date = datetime.strptime(date_str, "%Y-%m-%d")
+            days_to_exp = (exp_date - today).days
+            if min_days <= days_to_exp <= max_days:
+                target_date = date_str
+                break
+        
+        if not target_date: target_date = exps[0] 
+        
+        opt_chain = ticker_obj.option_chain(target_date)
+        options = opt_chain.calls if direction == "call" else opt_chain.puts
+        
+        candidates = []
+        r = 0.05 
+        T = (datetime.strptime(target_date, "%Y-%m-%d") - today).days / 365.0
+        
+        for index, row in options.iterrows():
+            strike = row['strike']
+            price = row['lastPrice']
+            iv = row['impliedVolatility']
+            volume = row['volume']
+            openInterest = row['openInterest']
+            
+            if volume < 5 or openInterest < 10: continue
+            if iv <= 0 or price <= 0: continue
+
+            delta, gamma = black_scholes(current_price, strike, T, r, iv, direction)
+            
+            if 0.3 <= abs(delta) <= 0.7:
+                score = (gamma * 100) * (np.log(volume + 1)) / (iv * 10)
+                
+                candidates.append({
+                    "contractSymbol": row['contractSymbol'],
+                    "strike": strike,
+                    "expiry": target_date,
+                    "price": price,
+                    "delta": delta,
+                    "gamma": gamma,
+                    "iv": iv,
+                    "volume": volume,
+                    "score": score,
+                    "type": direction 
+                })
+        
+        if candidates:
+            candidates.sort(key=lambda x: x['score'], reverse=True)
+            best_option = candidates[0]
+            
+        return best_option
+        
+    except Exception as e: # <--- except 區塊在這裡，確保 try 區塊是完整的
+        return None
+
+# --- 4. 介面 Sidebar ---
+st.sidebar.markdown("## ⚙️ 參數設定")
+ticker = st.sidebar.text_input("代碼", value="TSLA").upper()
+period = st.sidebar.select_slider("範圍", ["3mo", "6mo", "1y", "2y"], value="6mo")
+st.sidebar.markdown("---")
+
+if not ticker: st.stop()
+
+# --- 新增 AI 預測邏輯函數 ---
+def predict_future_trend(df, direction, days=5):
+    """
+    基於最近動量和 AI 評分進行的簡易線性預測
+    """
+    current_price = df['Close'].iloc[-1]
+    
+    if len(df) < 10: 
+        return [current_price] * days 
+    
+    recent_closes = df['Close'].iloc[-10:].values
+    
+    try:
+        X = np.arange(len(recent_closes))
+        slope, intercept, _, _, _ = si.linregress(X, recent_closes)
+        momentum = slope / 5 
+    except ValueError:
+        momentum = 0.0 
+
+    if direction == "call":
+        daily_change = max(momentum, 0.0005 * current_price) 
+    elif direction == "put":
+        daily_change = min(momentum, -0.0005 * current_price) 
+    else:
+        daily_change = momentum
+
+    predicted_prices = [current_price]
+    for i in range(days):
+        next_price = predicted_prices[-1] + daily_change
+        predicted_prices.append(next_price)
+        
+    return predicted_prices[1:] 
+
+# --- 5. 數據處理 ---
+try:
+    if ticker.startswith("HK."):
+        yf_ticker = ticker.split(".")[1] + ".HK"
+    elif ticker.startswith("US."):
+        yf_ticker = ticker.split(".")[1]
+    else:
+        yf_ticker = ticker
+        
+    stock = yf.Ticker(yf_ticker)
+    df = stock.history(period=period)
+    
+    if df.empty: st.error(f"無效代碼或無數據: {yf_ticker}"); st.stop()
+    
+    df = calculate_indicators(df)
+    score, direction, reasons = get_ai_sentiment(df)
+    current_price = df['Close'].iloc[-1]
+    hv = df['HV'].iloc[-1]
+    
+    best_opt = hunt_best_option(stock, current_price, direction, hv)
+    
+    predicted_prices = predict_future_trend(df, direction, days=5)
+    
+    # 修正日期處理：確保 future_dates 是 pd.Timestamp 類型
+    future_dates = []
+    # 使用最後一個有效日期作為起點，確保它是可運算的 Timestamp
+    last_valid_date = pd.to_datetime(df.index[-1].date()) 
+    current_date = last_valid_date
+    while len(future_dates) < 5:
+        current_date += timedelta(days=1)
+        # 檢查是否為交易日 (0=週一, 4=週五)
+        if current_date.weekday() < 5: 
+            # 統一日期類型，忽略時區差異
+            future_dates.append(pd.to_datetime(current_date))
+            
+except Exception as e:
+    st.error(f"數據處理錯誤: {type(e).__name__}: {e}"); st.stop()
+
+# --- 6. Dashboard ---
+
+c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
+
+# A. 股價卡片
+with c1:
+    last_close = df['Close'].iloc[-1]
+    change = last_close - df['Close'].iloc[-2]
+    pct = (change / df['Close'].iloc[-2])*100
+    color = TV_UP_COLOR if change >= 0 else TV_DOWN_COLOR
+    
+    st.markdown(f"""
+    <div class="metric-box">
+        <div class="metric-label">{ticker} 現價</div>
+        <div class="metric-val" style="color:{color}">${last_close:.2f}</div>
+        <div class="metric-sub" style="color:{color}">{change:+.2f} ({pct:+.2f}%)</div>
+        <div class="metric-label" style="margin-top:15px;">HV (歷史波幅)</div>
+        <div style="color:#ccc; font-size:16px;">{hv*100:.1f}%</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+# B. AI 評分卡片
+with c2:
+    score_color = TV_UP_COLOR if score >= 55 else TV_DOWN_COLOR if score <= 45 else "#FF9800"
+    sentiment_text = "看漲 (Bullish)" if direction == "call" else "看跌 (Bearish)" if direction == "put" else "中性 (Neutral)"
+    
+    reason_html = "".join([f"<div>• {r}</div>" for r in reasons])
+    
+    st.markdown(f"""
+    <div class="metric-box">
+        <div class="metric-label">AI 趨勢綜合分析</div>
+        <div class="metric-val" style="color
