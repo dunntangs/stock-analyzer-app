@@ -71,8 +71,8 @@ def period_to_dates(period):
         start_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
     return start_date, end_date
 
-@st.cache_data(ttl=300) # 5分鐘更新一次
-def get_stock_data(code, period, quote_ctx):
+@st.cache_data(ttl=300) 
+def get_stock_data(code, period, _quote_ctx):
     """使用 Futu API 獲取 K 線數據"""
     start_date, end_date = period_to_dates(period)
     
