@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import scipy.stats as si
-from futu import * import yfinance as yf# <-- 引入 Futu API
+from futu import * import yfinance as yf
 
 # --- 1. 頁面設定 (TradingView 風格) ---
 st.set_page_config(page_title="TradeGenius AI Options", layout="wide", page_icon="⚡", initial_sidebar_state="expanded")
