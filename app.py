@@ -37,7 +37,7 @@ st.markdown(f"""
     .greek-tag {{ background: #333; padding: 2px 6px; border-radius: 4px; font-size: 11px; color: #aaa; }}
     .recomm-badge {{ background: linear-gradient(45deg, #2962ff, #00d2ff); color: white; padding: 5px 10px; border-radius: 15px; font-size: 12px; font-weight: bold; display: inline-block; margin-bottom: 10px; }}
 
-    /* 預測卡片樣式 */
+    /* 預測卡片樣式 - 儘管移除了卡片，但保留樣式以防未來使用 */
     .forecast-day {{ font-size: 14px; color: #787b86; }}
     .forecast-price {{ font-size: 18px; font-weight: bold; }}
 
@@ -190,7 +190,7 @@ st.sidebar.markdown("---")
 
 if not ticker: st.stop()
 
-# --- 新增 AI 預測邏輯函數 ---
+# --- AI 預測邏輯函數 (保留，因為圖表需要) ---
 def predict_future_trend(df, direction, days=5):
     """
     基於最近動量和 AI 評分進行的簡易線性預測
@@ -223,7 +223,7 @@ def predict_future_trend(df, direction, days=5):
         
     return predicted_prices[1:] 
 
-# --- 5. 數據處理 ---
+# --- 5. 數據處理 (保留，因為圖表需要) ---
 try:
     if ticker.startswith("HK."):
         yf_ticker = ticker.split(".")[1] + ".HK"
@@ -244,9 +244,9 @@ try:
     
     best_opt = hunt_best_option(stock, current_price, direction, hv)
     
+    # *** 保留：計算預測價格和日期給圖表使用 ***
     predicted_prices = predict_future_trend(df, direction, days=5)
     
-    # 修正日期處理：確保 future_dates 是 pd.Timestamp 類型
     future_dates = []
     last_valid_date = pd.to_datetime(df.index[-1].date()) 
     current_date = last_valid_date
@@ -254,15 +254,17 @@ try:
         current_date += timedelta(days=1)
         if current_date.weekday() < 5: 
             future_dates.append(pd.to_datetime(current_date))
+    # *** END 保留 ***
             
 except Exception as e:
     st.error(f"數據處理錯誤: {type(e).__name__}: {e}"); st.stop()
 
-# --- 6. Dashboard ---
+# --- 6. Dashboard (移除卡片) ---
 
+# 保持四欄佈局以避免破壞整體美觀，但 C3 和 C4 將不輸出內容
 c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
 
-# A. 股價卡片
+# A. 股價卡片 (保留)
 with c1:
     last_close = df['Close'].iloc[-1]
     change = last_close - df['Close'].iloc[-2]
@@ -279,7 +281,7 @@ with c1:
     </div>
     """, unsafe_allow_html=True)
 
-# B. AI 評分卡片
+# B. AI 評分卡片 (保留)
 with c2:
     score_color = TV_UP_COLOR if score >= 55 else TV_DOWN_COLOR if score <= 45 else "#FF9800"
     sentiment_text = "看漲 (Bullish)" if direction == "call" else "看跌 (Bearish)" if direction == "put" else "中性 (Neutral)"
@@ -295,73 +297,20 @@ with c2:
     </div>
     """, unsafe_allow_html=True)
 
-# C. AI 期權推介卡片
+# C. AI 期權推介卡片 (移除輸出)
 with c3:
-    if best_opt:
-        opt_type_text = "看漲 (CALL)" if best_opt['type'] == 'call' else "看跌 (PUT)"
-        opt_type_abbr = "C" if best_opt['type'] == 'call' else "P"
-        opt_color = TV_UP_COLOR if best_opt['type'] == "call" else TV_DOWN_COLOR
-        
-        raw_symbol = best_opt['contractSymbol'] 
-        strike_clean = best_opt['strike']       
-        type_index = raw_symbol.find('C') if 'C' in raw_symbol else raw_symbol.find('P')
-        
-        if type_index != -1:
-            date_part = raw_symbol[:type_index]
-            cleaned_symbol = f"{date_part} {opt_type_abbr}{strike_clean:.2f}"
-        else:
-            cleaned_symbol = raw_symbol
-        
-        st.markdown(f"""
-        <div class="metric-box" style="border-color: {opt_color};">
-            <div class="recomm-badge">{opt_type_text} - AI 嚴選</div>
-            <div class="opt-title">{cleaned_symbol}</div>
-            
-            <div class="opt-detail-grid">
-                <div>到期日: <span style="color:#fff">{best_opt['expiry']}</span></div>
-                <div>行使價: <span style="color:#fff">${best_opt['strike']:.2f}</span></div>
-                <div>最新價: <span style="color:#fff; font-size:16px;">${best_opt['price']:.2f}</span></div>
-                <div>引伸波幅 (IV): <span style="color:#ffd700">{best_opt['iv']*100:.1f}%</span></div>
-            </div>
-        </div>""", unsafe_allow_html=True) # <<< 修正：確保三引號在這裡關閉
+    # 這裡可以留空或放一個佔位符，但為了完全移除輸出，我們不呼叫 st.markdown
+    # st.markdown("", unsafe_allow_html=True)
+    pass 
 
-    else:
-        st.markdown(f"""
-        <div class="metric-box">
-            <div class="metric-label">AI 期權獵人</div>
-            <div style="margin-top:20px; color:#999;">
-                ⚠️ 暫無合適期權推介。<br>
-                <small>可能原因：數據源無即時期權鏈、流動性不足或市場處於休市。</small>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-# D. AI 推估卡片
+# D. AI 推估未來 5 日走勢卡片 (移除輸出)
 with c4:
-    st.markdown(f"""
-    <div class="metric-box">
-        <div class="metric-label">AI 推估未來 5 日走勢</div>
-        <div style="margin-top:10px;">
-            <div style="display: flex; justify-content: space-between; gap: 10px;">
-                {
-                    "".join([
-                        f'''
-                        <div style="text-align: center;">
-                            <div class="forecast-day">{future_dates[i].strftime('%m/%d')}</div>
-                            <div class="forecast-price" style="color: {'#089981' if predicted_prices[i] >= current_price else '#f23645'}">
-                                ${predicted_prices[i]:.2f}
-                            </div>
-                        </div>
-                        ''' for i in range(5)
-                    ])
-                }
-            </div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+    # 這裡可以留空或放一個佔位符，但為了完全移除輸出，我們不呼叫 st.markdown
+    # st.markdown("", unsafe_allow_html=True)
+    pass
 
 
-# --- 7. 圖表 ---
+# --- 7. 圖表 (保留 AI 預測線) ---
 st.markdown("<br>", unsafe_allow_html=True)
 
 fig = make_subplots(rows=4, cols=1, 
@@ -379,7 +328,7 @@ fig.add_trace(go.Candlestick(
     name="K線", increasing_line_color=TV_UP_COLOR, decreasing_line_color=TV_DOWN_COLOR
 ), row=1, col=1)
 
-# 加入 AI 預測線
+# *** 保留：加入 AI 預測線 ***
 fig.add_trace(go.Scatter(
     x=forecast_index, y=forecast_prices_plot, 
     line=dict(color='#ff9900', width=2, dash='dot'), 
