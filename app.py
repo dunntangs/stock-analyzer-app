@@ -226,7 +226,7 @@ with c1:
         <div class="metric-sub" style="color:{color}">{change:+.2f} ({pct:+.2f}%)</div>
         <div class="metric-label" style="margin-top:15px;">HV (歷史波幅)</div>
         <div style="color:#ccc; font-size:16px;">{hv*100:.1f}%</div>
-
+    </div>
     """, unsafe_allow_html=True)
 
 # B. AI 評分卡片 (略)
@@ -265,6 +265,7 @@ with c3:
             cleaned_symbol = raw_symbol
         # -------------------
         
+        # *** 修正區域：確保 closing quotes 在 final div 之後沒有額外空行 ***
         st.markdown(f"""
         <div class="metric-box" style="border-color: {opt_color};">
             <div class="recomm-badge">{opt_type_text} - AI 嚴選</div>
@@ -274,9 +275,8 @@ with c3:
                 <div>最新價: <span style="color:#fff; font-size:16px;">${best_opt['price']:.2f}</span></div>
                 <div>引伸波幅 (IV): <span style="color:#ffd700">{best_opt['iv']*100:.1f}%</span></div>
             </div>
-            
-            </div>
-        """, unsafe_allow_html=True)
+        </div>""", unsafe_allow_html=True) # <<< 移除多餘空行
+
     else:
         st.markdown(f"""
         <div class="metric-box">
