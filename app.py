@@ -5,7 +5,7 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
-import scipy.stats as si # 用於 Black-Scholes 計算
+import scipy.stats as si 
 
 # --- 1. 頁面設定 ---
 st.set_page_config(page_title="TradeGenius AI Options", layout="wide", page_icon="⚡", initial_sidebar_state="expanded")
@@ -75,6 +75,15 @@ def calculate_indicators(df):
     df['MACD'] = exp12 - exp26
     df['Signal'] = df['MACD'].ewm(span=9).mean()
     
+    # KDJ (Stochastics) 計算 (參數 9, 3, 3)
+    # 計算 9 期內的最低價 (Low) 和最高價 (High)
+    low_min = df['Low'].rolling(window=9).min()
+    high_max = df['High'].rolling(window=9).max()
+    df['RSV'] = (df['Close'] - low_min) / (high_max - low_min) * 100
+    df['K'] = df['RSV'].ewm(span=3).mean()
+    df['D'] = df['K'].ewm(span=3).mean()
+    df['J'] = 3 * df['K'] - 2 * df['D']
+
     # 歷史波動率 (HV) - 用於比較 IV
     df['Log_Ret'] = np.log(df['Close'] / df['Close'].shift(1))
     df['HV'] = df['Log_Ret'].rolling(20).std() * np.sqrt(252)
@@ -86,11 +95,14 @@ def get_ai_sentiment(df):
     row = df.iloc[-1]
     reasons = []
     
-    # 簡單評分邏輯
     if row['Close'] > row['SMA20']: score += 15; reasons.append("股價站上 MA20")
     else: score -= 15; reasons.append("股價跌破 MA20")
     
     if row['MACD'] > row['Signal']: score += 15; reasons.append("MACD 金叉")
+    # KDJ 判斷（K線向上穿過D線視為金叉）
+    if row['K'] > row['D'] and df['K'].iloc[-2] <= df['D'].iloc[-2]: 
+        score += 10; reasons.append("KDJ 金叉")
+
     if row['RSI'] < 30: score += 10; reasons.append("RSI 超賣")
     elif row['RSI'] > 70: score -= 10; reasons.append("RSI 超買")
     
@@ -104,7 +116,6 @@ def hunt_best_option(ticker_obj, current_price, direction, hv):
     """
     best_option = None
     
-    # 1. 獲取到期日 (尋找 25-60 天內的期權，時間價值衰減適中，爆發力夠)
     try:
         exps = ticker_obj.options
         if not exps: return None
@@ -121,36 +132,30 @@ def hunt_best_option(ticker_obj, current_price, direction, hv):
                 target_date = date_str
                 break
         
-        if not target_date: target_date = exps[0] # 如果找不到合適區間，就拿最近的
+        if not target_date: target_date = exps[0] 
         
-        # 2. 獲取期權鏈
         opt_chain = ticker_obj.option_chain(target_date)
         options = opt_chain.calls if direction == "call" else opt_chain.puts
         
-        # 3. 篩選與 Greeks 計算
         candidates = []
-        r = 0.05 # 假設無風險利率 5%
+        r = 0.05 
         T = (datetime.strptime(target_date, "%Y-%m-%d") - today).days / 365.0
         
         for index, row in options.iterrows():
-            # 基本過濾：成交量太低不要，深度價內/價外不要
-            if row['volume'] < 10 or row['openInterest'] < 50: continue
-            
             strike = row['strike']
             price = row['lastPrice']
             iv = row['impliedVolatility']
+            volume = row['volume']
+            openInterest = row['openInterest']
             
+            if volume < 5 or openInterest < 10: continue
             if iv <= 0 or price <= 0: continue
 
-            # 計算 Greeks
             delta, gamma = black_scholes(current_price, strike, T, r, iv, direction)
             
-            # AI 策略篩選邏輯：
-            # - Delta: 0.3 ~ 0.6 (最有肉食，Gamma 爆發力最強的區域)
-            # - IV: 最好不要高過 HV 太多 (避免買貴)
             if 0.3 <= abs(delta) <= 0.7:
-                # CP 值評分：Gamma越高(加速快) + 成交量越高(易進出) / IV(成本)
-                score = (gamma * 100) * (np.log(row['volume'])) / (iv * 10)
+                # 使用 log(volume + 1) 容錯
+                score = (gamma * 100) * (np.log(volume + 1)) / (iv * 10)
                 
                 candidates.append({
                     "contractSymbol": row['contractSymbol'],
@@ -160,13 +165,12 @@ def hunt_best_option(ticker_obj, current_price, direction, hv):
                     "delta": delta,
                     "gamma": gamma,
                     "iv": iv,
-                    "volume": row['volume'],
-                    "score": score
+                    "volume": volume,
+                    "score": score,
+                    "type": direction # 紀錄期權類型
                 })
         
-        # 4. 排序找出 No.1
         if candidates:
-            # 根據 CP Score 降序排列
             candidates.sort(key=lambda x: x['score'], reverse=True)
             best_option = candidates[0]
             
@@ -185,16 +189,23 @@ if not ticker: st.stop()
 
 # --- 5. 數據處理 ---
 try:
-    stock = yf.Ticker(ticker)
+    if ticker.startswith("HK."):
+        yf_ticker = ticker.split(".")[1] + ".HK"
+    elif ticker.startswith("US."):
+        yf_ticker = ticker.split(".")[1]
+    else:
+        yf_ticker = ticker
+        
+    stock = yf.Ticker(yf_ticker)
     df = stock.history(period=period)
-    if df.empty: st.error("無效代碼"); st.stop()
+    
+    if df.empty: st.error(f"無效代碼或無數據: {yf_ticker}"); st.stop()
     
     df = calculate_indicators(df)
     score, direction, reasons = get_ai_sentiment(df)
     current_price = df['Close'].iloc[-1]
     hv = df['HV'].iloc[-1]
     
-    # 執行 AI 期權獵人
     best_opt = hunt_best_option(stock, current_price, direction, hv)
     
 except Exception as e:
@@ -237,20 +248,21 @@ with c2:
     </div>
     """, unsafe_allow_html=True)
 
-# C. AI 期權推介卡片 (重點)
+# C. AI 期權推介卡片 (重點 - 改善顯示)
 with c3:
     if best_opt:
-        opt_color = TV_UP_COLOR if direction == "call" else TV_DOWN_COLOR
-        leverage = (abs(best_opt['delta']) * current_price) / best_opt['price'] # 簡易槓桿率
+        opt_type = "看漲 (CALL)" if best_opt['type'] == 'call' else "看跌 (PUT)"
+        opt_color = TV_UP_COLOR if best_opt['type'] == "call" else TV_DOWN_COLOR
+        leverage = (abs(best_opt['delta']) * current_price) / best_opt['price'] if best_opt['price'] > 0 else 0
         
         st.markdown(f"""
         <div class="metric-box" style="border-color: {opt_color};">
-            <div class="recomm-badge">AI 嚴選最佳期權</div>
+            <div class="recomm-badge">{opt_type} - AI 嚴選</div>
             <div class="opt-title">{best_opt['contractSymbol']}</div>
             
             <div class="opt-detail-grid">
                 <div>到期日: <span style="color:#fff">{best_opt['expiry']}</span></div>
-                <div>行使價: <span style="color:#fff">${best_opt['strike']}</span></div>
+                <div>行使價: <span style="color:#fff">${best_opt['strike']:.2f}</span></div>
                 <div>最新價: <span style="color:#fff; font-size:16px;">${best_opt['price']:.2f}</span></div>
                 <div>引伸波幅 (IV): <span style="color:#ffd700">{best_opt['iv']*100:.1f}%</span></div>
             </div>
@@ -278,29 +290,49 @@ with c3:
         </div>
         """, unsafe_allow_html=True)
 
-# --- 7. 圖表 (保持不變) ---
+# --- 7. 圖表 (新增 RSI, MACD, KDJ) ---
 st.markdown("<br>", unsafe_allow_html=True)
-fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
 
-# K線
+# 創建 4 行子圖: K線/MA, Volume, RSI, MACD
+fig = make_subplots(rows=4, cols=1, 
+                    shared_xaxes=True, 
+                    vertical_spacing=0.03, 
+                    row_heights=[0.5, 0.15, 0.2, 0.2])
+
+# Row 1: K線 and MAs
 fig.add_trace(go.Candlestick(
     x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
     name="K線", increasing_line_color=TV_UP_COLOR, decreasing_line_color=TV_DOWN_COLOR
 ), row=1, col=1)
 
-# MA
 fig.add_trace(go.Scatter(x=df.index, y=df['SMA20'], line=dict(color='#2962ff', width=1), name='MA20'), row=1, col=1)
 fig.add_trace(go.Scatter(x=df.index, y=df['SMA50'], line=dict(color='#ff6d00', width=1), name='MA50'), row=1, col=1)
 
-# Vol
+# Row 2: Volume
 colors_vol = [TV_DOWN_COLOR if c < o else TV_UP_COLOR for c, o in zip(df['Close'], df['Open'])]
 fig.add_trace(go.Bar(x=df.index, y=df['Volume'], marker_color=colors_vol, name='Volume'), row=2, col=1)
 
+# Row 3: RSI
+fig.add_trace(go.Scatter(x=df.index, y=df['RSI'], line=dict(color='#ff9900', width=1.5), name='RSI'), row=3, col=1)
+fig.add_hline(y=70, line_dash="dash", line_color="#f23645", row=3, col=1, name='超買')
+fig.add_hline(y=30, line_dash="dash", line_color=TV_UP_COLOR, row=3, col=1, name='超賣')
+fig.update_yaxes(title_text="RSI", row=3, col=1, range=[0, 100])
+
+# Row 4: MACD
+fig.add_trace(go.Bar(x=df.index, y=df['MACD'] - df['Signal'], name='MACD 柱',
+                     marker_color=['#089981' if v >= 0 else '#f23645' for v in (df['MACD'] - df['Signal'])]), 
+              row=4, col=1)
+fig.add_trace(go.Scatter(x=df.index, y=df['MACD'], line=dict(color='#2962ff'), name='MACD'), row=4, col=1)
+fig.add_trace(go.Scatter(x=df.index, y=df['Signal'], line=dict(color='#ff6d00'), name='Signal'), row=4, col=1)
+fig.update_yaxes(title_text="MACD", row=4, col=1)
+
+
 fig.update_layout(
-    height=600, margin=dict(t=10, b=10, l=10, r=40), 
+    height=900, margin=dict(t=10, b=10, l=10, r=40), 
     paper_bgcolor=TV_BG_COLOR, plot_bgcolor=TV_BG_COLOR, font=dict(color=TEXT_COLOR),
     showlegend=False, hovermode='x unified', dragmode='pan'
 )
+
 fig.update_xaxes(showgrid=True, gridcolor="#333", rangeslider_visible=False)
 fig.update_yaxes(showgrid=True, gridcolor="#333")
 
