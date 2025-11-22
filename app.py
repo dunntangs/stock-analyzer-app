@@ -5,292 +5,251 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-# --- 網頁設定 ---
-st.set_page_config(page_title="美港股 AI 分析終端機", layout="wide", page_icon="📈")
+# --- 1. 頁面基礎設定 (年輕化 UI) ---
+st.set_page_config(page_title="TradeGenius AI", layout="wide", page_icon="⚡")
 
-# --- CSS 優化 ---
+# 自定義 CSS：讓介面更有現代感 (Dark Mode Neon Style)
 st.markdown("""
 <style>
-    .metric-card { background-color: #1e1e1e; padding: 15px; border-radius: 10px; border: 1px solid #333; text-align: center; }
-    .score-high { color: #00e676; font-size: 24px; font-weight: bold; }
-    .score-mid { color: #ffea00; font-size: 24px; font-weight: bold; }
-    .score-low { color: #ff3d00; font-size: 24px; font-weight: bold; }
+    /* 全局字體優化 */
+    .stApp { font-family: 'Inter', sans-serif; }
+    
+    /* 頂部數據卡片樣式 */
+    .metric-container {
+        background: linear-gradient(145deg, #1e1e1e, #2d2d2d);
+        padding: 20px;
+        border-radius: 15px;
+        border: 1px solid #333;
+        text-align: center;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+        transition: transform 0.2s;
+    }
+    .metric-container:hover { transform: translateY(-5px); border-color: #00d2ff; }
+    
+    .metric-label { color: #888; font-size: 0.9rem; text-transform: uppercase; letter-spacing: 1px; }
+    .metric-value { font-size: 2rem; font-weight: 800; color: #fff; margin: 5px 0; }
+    .metric-delta.up { color: #00e676; font-weight: bold; }
+    .metric-delta.down { color: #ff3d00; font-weight: bold; }
+    
+    /* AI 標籤 */
+    .ai-tag {
+        background-color: #2962ff; color: white; padding: 4px 12px; 
+        border-radius: 20px; font-size: 0.8rem; font-weight: bold; display: inline-block;
+        margin-bottom: 10px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📈 美港股 AI 全能分析儀")
-st.caption("包含 MA(10/20/50/100/200), RSI, MACD, KDJ, 成交量及演算法走勢預測")
+# --- 2. 核心運算邏輯 ---
 
-# --- 側邊欄 ---
-st.sidebar.header("⚙️ 參數設定")
-ticker = st.sidebar.text_input("股票代碼", value="0700.HK").upper()
-period = st.sidebar.selectbox("數據範圍", ["6mo", "1y", "2y", "5y"], index=1)
-
-st.sidebar.subheader("圖表顯示")
-show_ma = st.sidebar.multiselect("移動平均線 (MA)", ["MA10", "MA20", "MA50", "MA100", "MA200"], default=["MA20", "MA50", "MA200"])
-show_volume = st.sidebar.checkbox("顯示成交量", value=True)
-indicator_select = st.sidebar.selectbox("副圖指標", ["MACD", "RSI", "KDJ", "全部隱藏"], index=0)
-
-# --- 核心運算函數 ---
-
-def calculate_indicators(df):
-    # 1. 移動平均線 (SMA)
+def calculate_tech_indicators(df):
+    # MA 線 (全部計算)
     for ma in [10, 20, 50, 100, 200]:
         df[f'SMA{ma}'] = df['Close'].rolling(window=ma).mean()
 
-    # 2. RSI (相對強弱指標) - 14日
+    # RSI (14)
     delta = df['Close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
     rs = gain / loss
     df['RSI'] = 100 - (100 / (1 + rs))
 
-    # 3. MACD
+    # MACD
     exp12 = df['Close'].ewm(span=12, adjust=False).mean()
     exp26 = df['Close'].ewm(span=26, adjust=False).mean()
     df['MACD'] = exp12 - exp26
-    df['Signal_Line'] = df['MACD'].ewm(span=9, adjust=False).mean()
-    df['MACD_Hist'] = df['MACD'] - df['Signal_Line']
+    df['Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
+    df['Hist'] = df['MACD'] - df['Signal']
 
-    # 4. KDJ (隨機指標)
-    low_list = df['Low'].rolling(9, min_periods=9).min()
-    high_list = df['High'].rolling(9, min_periods=9).max()
-    rsv = (df['Close'] - low_list) / (high_list - low_list) * 100
+    # KDJ
+    low_9 = df['Low'].rolling(9).min()
+    high_9 = df['High'].rolling(9).max()
+    rsv = (df['Close'] - low_9) / (high_9 - low_9) * 100
     df['K'] = rsv.ewm(com=2).mean()
     df['D'] = df['K'].ewm(com=2).mean()
     df['J'] = 3 * df['K'] - 2 * df['D']
     
     return df
 
-def ai_analysis_score(df):
-    """
-    AI 評分邏輯 (0-100分)
-    """
-    score = 50 # 基礎分
-    reasons = []
-    
-    current = df.iloc[-1]
-    prev = df.iloc[-2]
-    
-    # A. 趨勢分析 (30分)
-    if current['Close'] > current['SMA20']:
-        score += 10
-        reasons.append("✅ 股價位於月線 (MA20) 之上 (短期強勢)")
-    else:
-        score -= 10
-        reasons.append("⚠️ 股價跌破月線 (短期轉弱)")
-        
-    if current['SMA50'] > current['SMA200']:
-        score += 10
-        reasons.append("✅ 多頭排列 (MA50 > MA200)")
-    
-    if current['Close'] > current['SMA200']:
-        score += 10
-    else:
-        score -= 10
-        reasons.append("⚠️ 股價低於牛熊線 (MA200) (長期弱勢)")
-
-    # B. 動能指標 (40分)
-    # RSI
-    if current['RSI'] < 30:
-        score += 15
-        reasons.append("🔥 RSI 進入超賣區 (反彈機會大)")
-    elif current['RSI'] > 70:
-        score -= 15
-        reasons.append("❄️ RSI 進入超買區 (回調風險高)")
-    
-    # MACD
-    if current['MACD'] > current['Signal_Line'] and prev['MACD'] <= prev['Signal_Line']:
-        score += 15
-        reasons.append("🚀 MACD 出現黃金交叉 (買入訊號)")
-    elif current['MACD'] < current['Signal_Line']:
-        score -= 5
-
-    # KDJ
-    if current['K'] < 20 and current['K'] > current['D']:
-        score += 10
-        reasons.append("📈 KDJ 低位金叉")
-
-    # C. 成交量 (10分)
-    vol_ma5 = df['Volume'].rolling(5).mean().iloc[-1]
-    if current['Volume'] > vol_ma5 * 1.5:
-        score += 10
-        if current['Close'] > current['Open']:
-            reasons.append("📢 爆量上漲 (資金流入)")
-        else:
-            reasons.append("⚠️ 爆量下跌 (恐慌拋售)")
-
-    # 限制分數範圍 0-100
-    score = max(0, min(100, score))
-    
-    return score, reasons
-
-def predict_trend(df, days=3):
-    """
-    使用線性回歸預測未來 N 天
-    """
-    # 取最後 15 天數據做趨勢擬合
-    recent_df = df.tail(15).reset_index() 
-    x = np.array(range(len(recent_df)))
-    y = recent_df['Close'].values
-    
-    # 計算斜率同截距 (y = mx + c)
+def predict_future(df, days=5):
+    # 簡單線性回歸預測
+    recent = df.tail(20).reset_index()
+    x = np.array(range(len(recent)))
+    y = recent['Close'].values
     slope, intercept = np.polyfit(x, y, 1)
     
-    # 預測未來
-    last_x = x[-1]
     future_prices = []
+    start_x = x[-1]
     for i in range(1, days + 1):
-        future_prices.append(slope * (last_x + i) + intercept)
-        
+        future_prices.append(slope * (start_x + i) + intercept)
+    
     return future_prices, slope
 
-# --- 主程式邏輯 ---
+def get_ai_score(df):
+    score = 50
+    row = df.iloc[-1]
+    reasons = []
+    
+    # 簡單評分邏輯
+    if row['Close'] > row['SMA20']: score += 10; reasons.append("股價高於月線 (強)")
+    else: score -= 10
+    
+    if row['MACD'] > row['Signal']: score += 15; reasons.append("MACD 金叉")
+    
+    if row['RSI'] < 30: score += 15; reasons.append("RSI 超賣 (博反彈)")
+    elif row['RSI'] > 70: score -= 15; reasons.append("RSI 超買 (小心回調)")
+    
+    if row['SMA50'] > row['SMA200']: score += 10; reasons.append("均線多頭排列")
+    
+    return max(0, min(100, score)), reasons
 
+# --- 3. 介面佈局 ---
+
+# 側邊欄：簡約設定
+st.sidebar.title("⚡ 設定")
+ticker = st.sidebar.text_input("股票代碼", value="TSLA").upper() # 預設改為 TSLA
+period = st.sidebar.select_slider("時間範圍", options=["3mo", "6mo", "1y", "2y", "5y"], value="1y")
+st.sidebar.caption("AI 分析模式已啟動")
+
+# 主畫面
 if ticker:
-    with st.spinner('AI 正在運算數據、繪製圖表及進行預測...'):
-        # 1. 獲取數據
-        try:
-            stock = yf.Ticker(ticker)
-            df = stock.history(period=period)
-            info = stock.info
-            name = info.get('shortName', ticker)
-        except:
-            st.error("找不到股票，請檢查代碼。")
-            st.stop()
+    # 獲取數據
+    try:
+        stock = yf.Ticker(ticker)
+        df = stock.history(period=period)
+        if df.empty: st.error("無數據，請檢查代碼"); st.stop()
+        info = stock.info
+    except: st.error("連線錯誤"); st.stop()
 
-        if df.empty:
-            st.error("數據庫為空，請嘗試其他股票。")
-            st.stop()
+    # 計算
+    df = calculate_tech_indicators(df)
+    ai_prices, slope = predict_future(df, days=5) # 改為 5 日
+    score, reasons = get_ai_score(df)
 
-        # 2. 計算指標
-        df = calculate_indicators(df)
+    # --- 頂部數據 Dashboard ---
+    last_close = df['Close'].iloc[-1]
+    last_open = df['Open'].iloc[-1]
+    change = last_close - df['Close'].iloc[-2]
+    pct_change = (change / df['Close'].iloc[-2]) * 100
+    color_cls = "up" if change >= 0 else "down"
+    sign = "+" if change >= 0 else ""
+    
+    c1, c2, c3, c4 = st.columns(4)
+    
+    with c1:
+        st.markdown(f"""
+        <div class="metric-container">
+            <div class="metric-label">{ticker} 收盤價</div>
+            <div class="metric-value">${last_close:.2f}</div>
+            <div class="metric-delta {color_cls}">{sign}{change:.2f} ({sign}{pct_change:.2f}%)</div>
+        </div>
+        """, unsafe_allow_html=True)
         
-        # 3. AI 評分與分析
-        ai_score, ai_reasons = ai_analysis_score(df)
-        
-        # 4. 趨勢預測
-        pred_prices, trend_slope = predict_trend(df)
-        trend_text = "📈 上升趨勢" if trend_slope > 0 else "📉 下跌趨勢"
+    with c2:
+        trend = "🚀 看漲" if slope > 0 else "🔻 看跌"
+        pred_price = ai_prices[-1]
+        p_change = ((pred_price - last_close)/last_close)*100
+        p_color = "up" if p_change > 0 else "down"
+        st.markdown(f"""
+        <div class="metric-container">
+            <div class="ai-tag">AI 預測 (5日後)</div>
+            <div class="metric-value">${pred_price:.2f}</div>
+            <div class="metric-delta {p_color}">{trend} {p_change:+.2f}%</div>
+        </div>
+        """, unsafe_allow_html=True)
 
-        # --- 顯示 AI 儀表板 ---
-        st.subheader(f"🤖 AI 智能分析報告: {name} ({ticker})")
-        
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            st.markdown(f"""
-            <div class="metric-card">
-                <span>AI 綜合評分</span>
-                <div class="{ 'score-high' if ai_score >= 70 else 'score-mid' if ai_score >= 40 else 'score-low' }">
-                    {ai_score} / 100
-                </div>
-                <small>{'建議買入' if ai_score >= 70 else '建議觀望' if ai_score >= 40 else '建議賣出'}</small>
-            </div>
-            """, unsafe_allow_html=True)
-            
-        with col2:
-            last_close = df['Close'].iloc[-1]
-            pred_close = pred_prices[-1]
-            change_pct = ((pred_close - last_close) / last_close) * 100
-            color = "green" if change_pct > 0 else "red"
-            
-            st.markdown(f"""
-            <div class="metric-card">
-                <span>AI 推估未來 3 日走勢</span>
-                <div style="color: {color}; font-size: 24px; font-weight: bold;">
-                    {pred_close:.2f} ({change_pct:+.2f}%)
-                </div>
-                <small>{trend_text}</small>
-            </div>
-            """, unsafe_allow_html=True)
+    with c3:
+        score_color = "#00e676" if score >= 60 else "#ffea00" if score >= 40 else "#ff3d00"
+        st.markdown(f"""
+        <div class="metric-container">
+            <div class="metric-label">AI 綜合評分</div>
+            <div class="metric-value" style="color:{score_color}">{score}</div>
+            <div class="metric-label">/ 100</div>
+        </div>
+        """, unsafe_allow_html=True)
 
-        with col3:
-            st.markdown("""<div class="metric-card" style="text-align:left; font-size: 0.9em;"><b>關鍵訊號：</b><br>""", unsafe_allow_html=True)
-            for r in ai_reasons[:3]: # 只顯示前3個重要原因
-                st.markdown(f"{r}")
-            st.markdown("</div>", unsafe_allow_html=True)
+    with c4:
+        vol_str = f"{df['Volume'].iloc[-1]/1000000:.2f}M"
+        st.markdown(f"""
+        <div class="metric-container">
+            <div class="metric-label">成交量</div>
+            <div class="metric-value">{vol_str}</div>
+            <div class="metric-label">最新交易日</div>
+        </div>
+        """, unsafe_allow_html=True)
 
-        # --- 繪製圖表 ---
-        st.markdown("---")
-        
-        # 設定子圖表 (如果選了副圖指標，就變成 2 行，否則 1 行)
-        rows = 2 if indicator_select != "全部隱藏" else 1
-        row_heights = [0.7, 0.3] if rows == 2 else [1.0]
-        
-        fig = make_subplots(
-            rows=rows, cols=1, 
-            shared_xaxes=True, 
-            vertical_spacing=0.05,
-            row_heights=row_heights
-        )
+    st.markdown("---")
 
-        # [主圖] K 線
-        fig.add_trace(go.Candlestick(
-            x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
-            name="K線"
-        ), row=1, col=1)
+    # --- 4. 超級圖表 (Plotly Subplots) ---
+    # 建立 5 行 Subplots (主圖, Vol, MACD, RSI, KDJ)
+    fig = make_subplots(
+        rows=5, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.03,
+        row_heights=[0.5, 0.1, 0.15, 0.15, 0.1], # 分配高度比例
+        specs=[[{"secondary_y": False}], [{}], [{}], [{}], [{}]],
+        subplot_titles=("股價 & 均線 & AI預測", "成交量", "MACD", "RSI", "KDJ")
+    )
 
-        # [主圖] MA 線
-        colors = {'MA10': 'purple', 'MA20': 'orange', 'MA50': 'blue', 'MA100': 'black', 'MA200': 'red'}
-        for ma_name in show_ma:
-            col_name = f'SMA{ma_name[2:]}' # MA10 -> SMA10
-            fig.add_trace(go.Scatter(
-                x=df.index, y=df[col_name], 
-                mode='lines', name=ma_name, line=dict(color=colors.get(ma_name, 'gray'), width=1)
-            ), row=1, col=1)
-            
-        # [主圖] AI 預測線 (虛線)
-        last_date = df.index[-1]
-        # 產生未來日期
-        future_dates = [last_date + pd.Timedelta(days=i) for i in range(1, 4)]
-        # 連接今天和未來
-        pred_x = [last_date] + future_dates
-        pred_y = [df['Close'].iloc[-1]] + pred_prices
-        
+    # Row 1: K線 + MA + AI
+    # 實色 K 線 (TradingView 風格: 升=綠#089981, 跌=紅#F23645)
+    fig.add_trace(go.Candlestick(
+        x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
+        name="K線",
+        increasing_line_color='#089981', increasing_fillcolor='#089981',
+        decreasing_line_color='#F23645', decreasing_fillcolor='#F23645'
+    ), row=1, col=1)
+
+    # MA 線 (全部預設顯示，用不同顏色)
+    ma_colors = {10: '#FFD700', 20: '#00d2ff', 50: '#ff00ff', 100: '#ffffff', 200: '#ff3d00'}
+    for ma, color in ma_colors.items():
         fig.add_trace(go.Scatter(
-            x=pred_x, y=pred_y,
-            mode='lines+markers', name='AI 推估路徑',
-            line=dict(color='gold', width=2, dash='dash')
+            x=df.index, y=df[f'SMA{ma}'], mode='lines', 
+            name=f'MA{ma}', line=dict(color=color, width=1)
         ), row=1, col=1)
 
-        # [副圖] 根據選擇顯示
-        if indicator_select == "MACD":
-            fig.add_trace(go.Bar(x=df.index, y=df['MACD_Hist'], name='MACD Hist', marker_color='gray'), row=2, col=1)
-            fig.add_trace(go.Scatter(x=df.index, y=df['MACD'], name='DIF', line=dict(color='blue')), row=2, col=1)
-            fig.add_trace(go.Scatter(x=df.index, y=df['Signal_Line'], name='DEA', line=dict(color='orange')), row=2, col=1)
-        
-        elif indicator_select == "RSI":
-            fig.add_trace(go.Scatter(x=df.index, y=df['RSI'], name='RSI', line=dict(color='purple')), row=2, col=1)
-            # 加 30/70 線
-            fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
-            fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
-            
-        elif indicator_select == "KDJ":
-            fig.add_trace(go.Scatter(x=df.index, y=df['K'], name='K', line=dict(color='orange')), row=2, col=1)
-            fig.add_trace(go.Scatter(x=df.index, y=df['D'], name='D', line=dict(color='blue')), row=2, col=1)
-            fig.add_trace(go.Scatter(x=df.index, y=df['J'], name='J', line=dict(color='purple')), row=2, col=1)
+    # AI 預測線 (5日)
+    last_date = df.index[-1]
+    future_dates = [last_date + pd.Timedelta(days=i) for i in range(1, 6)]
+    pred_x = [last_date] + future_dates
+    pred_y = [last_close] + ai_prices
+    fig.add_trace(go.Scatter(
+        x=pred_x, y=pred_y, mode='lines+markers', name='AI 預測路徑',
+        line=dict(color='#00e676', width=2, dash='dot')
+    ), row=1, col=1)
 
-        # [成交量] 疊加在主圖底部 (透明度處理) 或 不顯示
-        if show_volume:
-            # 為了唔好遮住 K 線，將 Volume 縮細並放係主圖底部
-            # 呢度我哋用一個簡單技巧，唔開新 Subplot，而係直接畫
-            # 但因為比例問題，正規做法係開多個 Row，不過為咗慳位，我哋將佢放係副圖或者用 Text 顯示
-            # 更新：如果選了指標，成交量就不顯示圖表，只顯示數值，避免太亂。
-            # 或者我們可以強制開第3行。這裡為了美觀，我們只在 Tooltip 顯示，或者如果沒選副圖，就顯示在 Row 2
-            if indicator_select == "全部隱藏":
-                 fig.add_trace(go.Bar(x=df.index, y=df['Volume'], name='成交量', marker_color='rgba(100, 100, 100, 0.5)'), row=1, col=1)
+    # Row 2: Volume (成交量)
+    colors_vol = ['#F23645' if c < o else '#089981' for c, o in zip(df['Close'], df['Open'])]
+    fig.add_trace(go.Bar(
+        x=df.index, y=df['Volume'], name='成交量', marker_color=colors_vol
+    ), row=2, col=1)
 
-        # 佈局設定
-        fig.update_layout(
-            height=700,
-            xaxis_rangeslider_visible=False,
-            title_text=f"{ticker} 技術走勢圖",
-            hovermode='x unified'
-        )
-        
-        st.plotly_chart(fig, use_container_width=True)
-        
-        # 顯示詳細數據
-        with st.expander("查看詳細 OHLCV 及技術指標數據"):
-            st.dataframe(df.sort_index(ascending=False).round(2))
+    # Row 3: MACD
+    fig.add_trace(go.Bar(x=df.index, y=df['Hist'], name='MACD Hist', marker_color='gray'), row=3, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df['MACD'], name='DIF', line=dict(color='#2962ff')), row=3, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df['Signal'], name='DEA', line=dict(color='#ff6d00')), row=3, col=1)
+
+    # Row 4: RSI
+    fig.add_trace(go.Scatter(x=df.index, y=df['RSI'], name='RSI', line=dict(color='#ab47bc')), row=4, col=1)
+    fig.add_hline(y=70, line_dash="dash", line_color="red", row=4, col=1)
+    fig.add_hline(y=30, line_dash="dash", line_color="green", row=4, col=1)
+
+    # Row 5: KDJ
+    fig.add_trace(go.Scatter(x=df.index, y=df['K'], name='K', line=dict(color='#ffd600', width=1)), row=5, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df['D'], name='D', line=dict(color='#00e5ff', width=1)), row=5, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df['J'], name='J', line=dict(color='#d500f9', width=1)), row=5, col=1)
+
+    # 圖表 Layout 優化
+    fig.update_layout(
+        height=1200, # 拉長圖表高度
+        template="plotly_dark", # 深色主題
+        xaxis_rangeslider_visible=False, # 隱藏底部滑條
+        hovermode='x unified', # 滑鼠對齊顯示所有數據
+        margin=dict(l=10, r=10, t=30, b=10),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
+    
+    st.plotly_chart(fig, use_container_width=True)
+
+else:
+    st.info("請輸入代碼開始")
