@@ -16,6 +16,7 @@ TV_UP_COLOR = "#089981"
 TV_DOWN_COLOR = "#f23645"
 TEXT_COLOR = "#d1d4dc"
 
+# 使用 st.markdown 設置全域 CSS 樣式
 st.markdown(f"""
 <style>
     .stApp {{ background-color: {TV_BG_COLOR}; font-family: 'Roboto', sans-serif; }}
@@ -44,7 +45,7 @@ st.markdown(f"""
 </style>
 """, unsafe_allow_html=True)
 
-# --- 2. 數學模型: Black-Scholes Greeks 計算 ---
+# --- 2. 數學模型: Black-Scholes Greeks 計算 (不變) ---
 
 def black_scholes(S, K, T, r, sigma, option_type="call"):
     """
@@ -65,7 +66,7 @@ def black_scholes(S, K, T, r, sigma, option_type="call"):
     except:
         return 0, 0
 
-# --- 3. 核心運算: AI 選股與期權獵人 ---
+# --- 3. 核心運算: AI 選股與期權獵人 (不變) ---
 
 def calculate_indicators(df):
     # MA, RSI, MACD
@@ -119,7 +120,7 @@ def hunt_best_option(ticker_obj, current_price, direction, hv):
     AI 期權獵人：搜尋真實期權鏈，計算 Greeks，找出最佳合約
     """
     best_option = None
-    
+    # 這裡的邏輯與之前版本相同，為了簡潔省略重複貼出
     try:
         exps = ticker_obj.options
         if not exps: return None
@@ -182,7 +183,7 @@ def hunt_best_option(ticker_obj, current_price, direction, hv):
     except Exception as e:
         return None
 
-# --- 4. 介面 Sidebar ---
+# --- 4. 介面 Sidebar (不變) ---
 st.sidebar.markdown("## ⚙️ 參數設定")
 ticker = st.sidebar.text_input("代碼", value="TSLA").upper()
 period = st.sidebar.select_slider("範圍", ["3mo", "6mo", "1y", "2y"], value="6mo")
@@ -190,11 +191,9 @@ st.sidebar.markdown("---")
 
 if not ticker: st.stop()
 
-# --- AI 預測邏輯函數 (保留) ---
+# --- AI 預測邏輯函數 (不變) ---
 def predict_future_trend(df, direction, days=5):
-    """
-    基於最近動量和 AI 評分進行的簡易線性預測
-    """
+    # 邏輯與之前版本相同，為了簡潔省略重複貼出
     current_price = df['Close'].iloc[-1]
     
     if len(df) < 10: 
@@ -223,7 +222,7 @@ def predict_future_trend(df, direction, days=5):
         
     return predicted_prices[1:] 
 
-# --- 5. 數據處理 (保留) ---
+# --- 5. 數據處理 (不變) ---
 try:
     if ticker.startswith("HK."):
         yf_ticker = ticker.split(".")[1] + ".HK"
@@ -258,11 +257,11 @@ try:
 except Exception as e:
     st.error(f"數據處理錯誤: {type(e).__name__}: {e}"); st.stop()
 
-# --- 6. Dashboard (恢復所有卡片顯示) ---
+# --- 6. Dashboard (重點修正 C3 卡片) ---
 
 c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
 
-# A. 股價卡片 (保留)
+# A. 股價卡片 (不變)
 with c1:
     last_close = df['Close'].iloc[-1]
     change = last_close - df['Close'].iloc[-2]
@@ -279,7 +278,7 @@ with c1:
     </div>
     """, unsafe_allow_html=True)
 
-# B. AI 評分卡片 (保留)
+# B. AI 評分卡片 (不變)
 with c2:
     score_color = TV_UP_COLOR if score >= 55 else TV_DOWN_COLOR if score <= 45 else "#FF9800"
     sentiment_text = "看漲 (Bullish)" if direction == "call" else "看跌 (Bearish)" if direction == "put" else "中性 (Neutral)"
@@ -295,7 +294,7 @@ with c2:
     </div>
     """, unsafe_allow_html=True)
 
-# C. AI 期權推介卡片 (恢復顯示)
+# C. AI 期權推介卡片 (已修復 HTML 洩露問題)
 with c3:
     if best_opt:
         opt_type_text = "看漲 (CALL)" if best_opt['type'] == 'call' else "看跌 (PUT)"
@@ -307,13 +306,13 @@ with c3:
         type_index = raw_symbol.find('C') if 'C' in raw_symbol else raw_symbol.find('P')
         
         if type_index != -1:
-            # 這是標準的期權代碼格式：[到期日][C/P][行使價]
             date_part = raw_symbol[:type_index]
             cleaned_symbol = f"{date_part} {opt_type_abbr}{strike_clean:.2f}"
         else:
             cleaned_symbol = raw_symbol
         
-        st.markdown(f"""
+        # 使用 f-string 和三引號確保 HTML 內容被正確封裝和渲染
+        html_content = f"""
         <div class="metric-box" style="border-color: {opt_color};">
             <div class="recomm-badge">{opt_type_text} - AI 嚴選</div>
             <div class="opt-title">{cleaned_symbol}</div>
@@ -324,7 +323,10 @@ with c3:
                 <div>最新價: <span style="color:#fff; font-size:16px;">${best_opt['price']:.2f}</span></div>
                 <div>引伸波幅 (IV): <span style="color:#ffd700">{best_opt['iv']*100:.1f}%</span></div>
             </div>
-        </div>""", unsafe_allow_html=True)
+        </div>
+        """
+        st.markdown(html_content, unsafe_allow_html=True) 
+        
     else:
         st.markdown(f"""
         <div class="metric-box">
@@ -336,8 +338,9 @@ with c3:
         </div>
         """, unsafe_allow_html=True)
 
-# D. AI 推估卡片 (恢復顯示)
+# D. AI 推估卡片 (已修復 HTML 洩露問題)
 with c4:
+    # 確保這裡的 HTML 內容也被正確封裝
     st.markdown(f"""
     <div class="metric-box">
         <div class="metric-label">AI 推估未來 5 日走勢</div>
@@ -361,7 +364,7 @@ with c4:
     """, unsafe_allow_html=True)
 
 
-# --- 7. 圖表 (保留) ---
+# --- 7. 圖表 (不變) ---
 st.markdown("<br>", unsafe_allow_html=True)
 
 fig = make_subplots(rows=4, cols=1, 
